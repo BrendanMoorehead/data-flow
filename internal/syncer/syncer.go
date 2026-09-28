@@ -14,8 +14,6 @@ import (
 	"github.com/BrendanMoorehead/data-flow/internal/store"
 )
 
-const catalogSlice = "catalog"
-
 type Syncer struct {
 	providers []provider.Provider
 	sources   source.Registry
@@ -48,59 +46,45 @@ func New(deps Dependencies) *Syncer {
 func (s *Syncer) Run(ctx context.Context) {
 	var running sync.WaitGroup
 	for _, p := range s.providers {
-		running.Add(1)
-		go func() {
-			defer running.Done()
-			s.runProvider(ctx, p)
-		}()
+		runner, configured := s.runnerFor(p)
+		if !configured {
+			continue
+		}
+		startTask(&running, func() { runner.run(ctx) })
 	}
 	running.Wait()
 }
 
-func (s *Syncer) runProvider(ctx context.Context, p provider.Provider) {
+func (s *Syncer) PollProviderOnce(ctx context.Context, p provider.Provider) {
+	runner, configured := s.runnerFor(p)
+	if !configured {
+		return
+	}
+	runner.refreshCatalog(ctx, 0)
+	runner.pollDueSlicesOnce(ctx)
+}
+
+func (s *Syncer) runnerFor(p provider.Provider) (*providerRunner, bool) {
 	config, configured := s.sources.Lookup(p.Source())
 	if !configured {
 		s.logger.Error("provider has no source config; not polling", "source", p.Source())
-		return
+		return nil, false
 	}
-	ticker := time.NewTicker(config.PollInterval)
-	defer ticker.Stop()
-	for {
-		s.PollProvider(ctx, p)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
+	return newProviderRunner(s, p, config), true
 }
 
-func (s *Syncer) PollProvider(ctx context.Context, p provider.Provider) {
-	slices, err := p.Slices(ctx)
-	if err != nil {
-		s.recordFailure(ctx, p.Source(), catalogSlice, err)
-		return
-	}
-	s.recordSuccess(ctx, p.Source(), catalogSlice)
-	for _, slice := range slices {
-		s.pollSlice(ctx, p, slice)
-	}
-}
-
-func (s *Syncer) pollSlice(ctx context.Context, p provider.Provider, slice provider.SliceKey) {
+func (s *Syncer) pollSlice(ctx context.Context, p provider.Provider, slice provider.SliceKey) error {
 	startedAt := s.now()
 	snapshot, err := p.Poll(ctx, slice)
 	if err != nil {
-		s.recordFailure(ctx, p.Source(), string(slice), err)
-		return
+		return err
 	}
 	counts, err := s.ingest(ctx, p.Source(), snapshot)
 	if err != nil {
-		s.recordFailure(ctx, p.Source(), string(slice), err)
-		return
+		return err
 	}
-	s.recordSuccess(ctx, p.Source(), string(slice))
 	s.logPoll(p.Source(), slice, counts, s.now().Sub(startedAt))
+	return nil
 }
 
 type ingestCounts struct {
@@ -146,16 +130,13 @@ func (c *ingestCounts) add(result store.RecordResult) {
 	}
 }
 
-func (s *Syncer) recordSuccess(ctx context.Context, sourceID canonical.SourceID, slice string) {
-	if err := s.store.RecordPollSuccess(ctx, sourceID, slice, s.now()); err != nil {
-		s.logger.Error("record poll success", "source", sourceID, "slice", slice, "error", err)
+func (s *Syncer) recordAttempt(ctx context.Context, sourceID canonical.SourceID, slice string, attemptedAt, nextAttemptAt time.Time, pollErr error) {
+	if pollErr != nil {
+		s.logger.Warn("poll failed", "source", sourceID, "slice", slice, "error", pollErr, "next_attempt_at", nextAttemptAt)
 	}
-}
-
-func (s *Syncer) recordFailure(ctx context.Context, sourceID canonical.SourceID, slice string, pollErr error) {
-	s.logger.Warn("poll failed", "source", sourceID, "slice", slice, "error", pollErr)
-	if err := s.store.RecordPollFailure(ctx, sourceID, slice, s.now(), pollErr); err != nil {
-		s.logger.Error("record poll failure", "source", sourceID, "slice", slice, "error", err)
+	attempt := store.PollAttempt{Source: sourceID, Slice: slice, At: attemptedAt, NextAttemptAt: nextAttemptAt, Err: pollErr}
+	if err := s.store.RecordPollAttempt(ctx, attempt); err != nil {
+		s.logger.Error("record poll attempt", "source", sourceID, "slice", slice, "error", err)
 	}
 }
 

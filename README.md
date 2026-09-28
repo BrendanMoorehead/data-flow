@@ -41,6 +41,33 @@ curl -s localhost:8080/events/1/odds
 curl -s localhost:8080/status
 ```
 
+## Break things on purpose
+
+The simulator produces mild problems by default: intermittent 500s,
+out-of-order updates, and duplicate records. Run with `-calm` to turn them
+off. Stronger failures are triggered from the simulator's admin API on port
+9100:
+
+```sh
+# List scenarios and whether each is active
+curl -s localhost:9100/scenarios
+
+# Take the DraftKings direct feed down for 40 seconds
+curl -s -X POST "localhost:9100/scenarios/draftkings-outage?for=40s"
+
+# Watch its slices go retrying → failing, with next_attempt_at backing off
+curl -s localhost:8080/status
+
+# After ~12s, DraftKings prices switch to "source": "aggregator"
+curl -s localhost:8080/events/1/odds
+
+# End it early, and the prices switch back to draftkings_direct
+curl -s -X DELETE localhost:9100/scenarios/draftkings-outage
+```
+
+The other scenarios are `draftkings-slow`, `aggregator-rate-limit`, and
+`aggregator-lag`.
+
 ## AI & Tools
 
 ### Why `.claude/skills/` is committed

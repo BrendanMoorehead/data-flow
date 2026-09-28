@@ -48,13 +48,13 @@ type aggregatorOutcome struct {
 	Price float64 `json:"price"`
 }
 
-func (w *World) AggregatorHandler() http.Handler {
+func (s *Simulator) AggregatorHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/odds", w.serveAggregatorOdds)
-	return mux
+	mux.HandleFunc("GET /v1/odds", s.serveAggregatorOdds)
+	return s.withAggregatorProblems(mux)
 }
 
-func (w *World) serveAggregatorOdds(rw http.ResponseWriter, r *http.Request) {
+func (s *Simulator) serveAggregatorOdds(rw http.ResponseWriter, r *http.Request) {
 	page, err := pageNumber(r)
 	if err != nil {
 		httpserve.WriteError(rw, http.StatusBadRequest, err.Error())
@@ -62,24 +62,31 @@ func (w *World) serveAggregatorOdds(rw http.ResponseWriter, r *http.Request) {
 	}
 	var games []aggregatorGame
 	if r.URL.Query().Get("sport") == aggregatorSportNBA {
-		games = aggregatorGamesFrom(w.snapshot())
+		games = aggregatorGamesFrom(s.world.snapshot(), s.aggregatorPricesAsOf())
 	}
 	pageGames, totalPages := paginate(games, page, aggregatorPageSize)
 	httpserve.WriteJSON(rw, http.StatusOK, aggregatorPage{Page: page, TotalPages: totalPages, Data: pageGames})
 }
 
-func aggregatorGamesFrom(views []gameView) []aggregatorGame {
+func (s *Simulator) aggregatorPricesAsOf() time.Time {
+	if s.chaos.isActive(ScenarioAggregatorLag) {
+		return s.now().Add(-aggregatorLagDelay)
+	}
+	return s.now()
+}
+
+func aggregatorGamesFrom(views []gameView, pricesAsOf time.Time) []aggregatorGame {
 	games := make([]aggregatorGame, 0, len(views))
 	for _, view := range views {
-		games = append(games, aggregatorGameFrom(view))
+		games = append(games, aggregatorGameFrom(view, pricesAsOf))
 	}
 	return games
 }
 
-func aggregatorGameFrom(view gameView) aggregatorGame {
+func aggregatorGameFrom(view gameView, pricesAsOf time.Time) aggregatorGame {
 	bookmakers := make([]aggregatorBookmaker, 0, len(books))
 	for _, book := range books {
-		bookmakers = append(bookmakers, aggregatorBookmakerFrom(view, book))
+		bookmakers = append(bookmakers, aggregatorBookmakerFrom(view.quoteAsOf(book, pricesAsOf), view, book))
 	}
 	return aggregatorGame{
 		ID:           fmt.Sprintf("agg-%d", aggregatorEventIDOffset+view.number),
@@ -91,8 +98,7 @@ func aggregatorGameFrom(view gameView) aggregatorGame {
 	}
 }
 
-func aggregatorBookmakerFrom(view gameView, book string) aggregatorBookmaker {
-	quote := view.quotes[book]
+func aggregatorBookmakerFrom(quote moneylineQuote, view gameView, book string) aggregatorBookmaker {
 	return aggregatorBookmaker{
 		Key:        book,
 		LastUpdate: quote.updatedAt,

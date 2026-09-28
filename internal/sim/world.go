@@ -3,8 +3,8 @@ package sim
 import (
 	"context"
 	"fmt"
-	"maps"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,6 +20,7 @@ const (
 	maxFairProbability      = 0.8
 	maxProbabilityStep      = 0.02
 	maxBookProbabilityDrift = 0.015
+	maxQuoteHistory         = 200
 
 	firstTipoffHourUTC = 23
 	gameSpacing        = 30 * time.Minute
@@ -59,23 +60,23 @@ type game struct {
 	away                team
 	startsAt            time.Time
 	homeFairProbability map[string]float64
-	quotes              map[string]moneylineQuote
+	quoteHistory        map[string][]moneylineQuote
 }
 
-type World struct {
+type world struct {
 	mu     sync.Mutex
 	random *rand.Rand
 	games  []*game
 	now    func() time.Time
 }
 
-func NewWorld(seed uint64, now func() time.Time) *World {
-	world := &World{random: rand.New(rand.NewPCG(seed, seed)), now: now}
-	world.games = world.scheduleGames()
-	return world
+func newWorld(seed uint64, now func() time.Time) *world {
+	created := &world{random: rand.New(rand.NewPCG(seed, seed)), now: now}
+	created.games = created.scheduleGames()
+	return created
 }
 
-func (w *World) Run(ctx context.Context, driftInterval time.Duration) {
+func (w *world) run(ctx context.Context, driftInterval time.Duration) {
 	ticker := time.NewTicker(driftInterval)
 	defer ticker.Stop()
 	for {
@@ -88,7 +89,7 @@ func (w *World) Run(ctx context.Context, driftInterval time.Duration) {
 	}
 }
 
-func (w *World) scheduleGames() []*game {
+func (w *world) scheduleGames() []*game {
 	firstTipoff := firstTipoffOn(w.now())
 	var games []*game
 	for pairStart := 0; pairStart+1 < len(nbaTeams); pairStart += 2 {
@@ -99,7 +100,7 @@ func (w *World) scheduleGames() []*game {
 			away:                nbaTeams[pairStart+1],
 			startsAt:            firstTipoff.Add(time.Duration(gameIndex) * gameSpacing),
 			homeFairProbability: make(map[string]float64, len(books)),
-			quotes:              make(map[string]moneylineQuote, len(books)),
+			quoteHistory:        make(map[string][]moneylineQuote, len(books)),
 		}
 		w.openMarkets(scheduled)
 		games = append(games, scheduled)
@@ -107,7 +108,7 @@ func (w *World) scheduleGames() []*game {
 	return games
 }
 
-func (w *World) openMarkets(scheduled *game) {
+func (w *world) openMarkets(scheduled *game) {
 	consensusProbability := w.randomBetween(minFairProbability, maxFairProbability)
 	for _, book := range books {
 		bookDrift := w.randomBetween(-maxBookProbabilityDrift, maxBookProbabilityDrift)
@@ -116,7 +117,7 @@ func (w *World) openMarkets(scheduled *game) {
 	}
 }
 
-func (w *World) driftOnePrice() {
+func (w *world) driftOnePrice() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -127,37 +128,67 @@ func (w *World) driftOnePrice() {
 	w.requote(drifting, book)
 }
 
-func (w *World) requote(quoted *game, book string) {
-	quoted.quotes[book] = quoteFromFairProbability(quoted.homeFairProbability[book], w.now())
+func (w *world) requote(quoted *game, book string) {
+	quote := quoteFromFairProbability(quoted.homeFairProbability[book], w.now())
+	history := append(quoted.quoteHistory[book], quote)
+	quoted.quoteHistory[book] = history[max(0, len(history)-maxQuoteHistory):]
 }
 
-func (w *World) randomBetween(low, high float64) float64 {
+func (w *world) randomBetween(low, high float64) float64 {
 	return low + w.random.Float64()*(high-low)
 }
 
 type gameView struct {
-	number   int
-	home     team
-	away     team
-	startsAt time.Time
-	quotes   map[string]moneylineQuote
+	number       int
+	home         team
+	away         team
+	startsAt     time.Time
+	quoteHistory map[string][]moneylineQuote
 }
 
-func (w *World) snapshot() []gameView {
+func (w *world) snapshot() []gameView {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	views := make([]gameView, 0, len(w.games))
 	for _, scheduled := range w.games {
 		views = append(views, gameView{
-			number:   scheduled.number,
-			home:     scheduled.home,
-			away:     scheduled.away,
-			startsAt: scheduled.startsAt,
-			quotes:   maps.Clone(scheduled.quotes),
+			number:       scheduled.number,
+			home:         scheduled.home,
+			away:         scheduled.away,
+			startsAt:     scheduled.startsAt,
+			quoteHistory: cloneHistories(scheduled.quoteHistory),
 		})
 	}
 	return views
+}
+
+func (v gameView) currentQuote(book string) moneylineQuote {
+	history := v.quoteHistory[book]
+	return history[len(history)-1]
+}
+
+func (v gameView) previousQuote(book string) moneylineQuote {
+	history := v.quoteHistory[book]
+	return history[max(0, len(history)-2)]
+}
+
+func (v gameView) quoteAsOf(book string, moment time.Time) moneylineQuote {
+	history := v.quoteHistory[book]
+	for index := len(history) - 1; index > 0; index-- {
+		if !history[index].updatedAt.After(moment) {
+			return history[index]
+		}
+	}
+	return history[0]
+}
+
+func cloneHistories(histories map[string][]moneylineQuote) map[string][]moneylineQuote {
+	cloned := make(map[string][]moneylineQuote, len(histories))
+	for book, history := range histories {
+		cloned[book] = slices.Clone(history)
+	}
+	return cloned
 }
 
 func quoteFromFairProbability(homeProbability float64, at time.Time) moneylineQuote {

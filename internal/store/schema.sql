@@ -67,5 +67,6 @@ CREATE TABLE IF NOT EXISTS slice_health (
     last_error           TEXT,
     last_error_at        INTEGER,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      INTEGER NOT NULL,
     PRIMARY KEY (source, slice)
 );

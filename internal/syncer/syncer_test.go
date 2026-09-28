@@ -39,9 +39,9 @@ type pipeline struct {
 func newPipeline(t *testing.T) pipeline {
 	t.Helper()
 	ctx := context.Background()
-	world := sim.NewWorld(7, time.Now)
-	aggregatorServer := httptest.NewServer(world.AggregatorHandler())
-	draftKingsServer := httptest.NewServer(world.DraftKingsHandler())
+	simulator := sim.New(sim.Options{Seed: 7, BackgroundProblems: false, Now: time.Now})
+	aggregatorServer := httptest.NewServer(simulator.AggregatorHandler())
+	draftKingsServer := httptest.NewServer(simulator.DraftKingsHandler())
 	t.Cleanup(aggregatorServer.Close)
 	t.Cleanup(draftKingsServer.Close)
 
@@ -77,7 +77,7 @@ func newPipeline(t *testing.T) pipeline {
 func (p pipeline) pollEveryProvider(t *testing.T) {
 	t.Helper()
 	for _, provider := range p.providers {
-		p.syncer.PollProvider(context.Background(), provider)
+		p.syncer.PollProviderOnce(context.Background(), provider)
 	}
 	if err := p.rebuilder.Rebuild(context.Background()); err != nil {
 		t.Fatalf("rebuild: %v", err)

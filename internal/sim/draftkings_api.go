@@ -50,17 +50,17 @@ type draftKingsOutcome struct {
 	OddsAmerican string `json:"oddsAmerican"`
 }
 
-func (w *World) DraftKingsHandler() http.Handler {
+func (s *Simulator) DraftKingsHandler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/events", w.serveDraftKingsEvents)
-	mux.HandleFunc("GET /api/events/{eventID}/offers", w.serveDraftKingsOffers)
-	return mux
+	mux.HandleFunc("GET /api/events", s.serveDraftKingsEvents)
+	mux.HandleFunc("GET /api/events/{eventID}/offers", s.serveDraftKingsOffers)
+	return s.withDraftKingsProblems(mux)
 }
 
-func (w *World) serveDraftKingsEvents(rw http.ResponseWriter, r *http.Request) {
+func (s *Simulator) serveDraftKingsEvents(rw http.ResponseWriter, r *http.Request) {
 	events := []draftKingsEventSummary{}
 	if r.URL.Query().Get("league") == draftKingsLeagueNBA {
-		for _, view := range w.snapshot() {
+		for _, view := range s.world.snapshot() {
 			events = append(events, draftKingsEventSummary{
 				EventID: draftKingsEventID(view),
 				Name:    view.away.shortName + " @ " + view.home.shortName,
@@ -70,14 +70,14 @@ func (w *World) serveDraftKingsEvents(rw http.ResponseWriter, r *http.Request) {
 	httpserve.WriteJSON(rw, http.StatusOK, draftKingsEventList{Events: events})
 }
 
-func (w *World) serveDraftKingsOffers(rw http.ResponseWriter, r *http.Request) {
+func (s *Simulator) serveDraftKingsOffers(rw http.ResponseWriter, r *http.Request) {
 	eventID := r.PathValue("eventID")
-	view, found := findGameView(w.snapshot(), eventID)
+	view, found := findGameView(s.world.snapshot(), eventID)
 	if !found {
 		httpserve.WriteError(rw, http.StatusNotFound, "no event "+eventID)
 		return
 	}
-	httpserve.WriteJSON(rw, http.StatusOK, draftKingsEventOffersFrom(view))
+	httpserve.WriteJSON(rw, http.StatusOK, s.draftKingsEventOffersFrom(view))
 }
 
 func findGameView(views []gameView, draftKingsID string) (gameView, bool) {
@@ -89,8 +89,8 @@ func findGameView(views []gameView, draftKingsID string) (gameView, bool) {
 	return gameView{}, false
 }
 
-func draftKingsEventOffersFrom(view gameView) draftKingsEventOffers {
-	quote := view.quotes[bookDraftKings]
+func (s *Simulator) draftKingsEventOffersFrom(view gameView) draftKingsEventOffers {
+	quote := s.draftKingsQuote(view)
 	return draftKingsEventOffers{
 		Event: draftKingsEvent{
 			EventID:   draftKingsEventID(view),
@@ -103,12 +103,27 @@ func draftKingsEventOffersFrom(view gameView) draftKingsEventOffers {
 			Type:      draftKingsOfferMoneyline,
 			Status:    draftKingsOfferStatusOpen,
 			UpdatedAt: quote.updatedAt,
-			Outcomes: []draftKingsOutcome{
-				{Participant: view.home.shortName, Role: "home", OddsAmerican: quote.home.String()},
-				{Participant: view.away.shortName, Role: "away", OddsAmerican: quote.away.String()},
-			},
+			Outcomes:  s.draftKingsOutcomes(view, quote),
 		}},
 	}
+}
+
+func (s *Simulator) draftKingsQuote(view gameView) moneylineQuote {
+	if s.chaos.backgroundChance(draftKingsOutOfOrderRate) {
+		return view.previousQuote(bookDraftKings)
+	}
+	return view.currentQuote(bookDraftKings)
+}
+
+func (s *Simulator) draftKingsOutcomes(view gameView, quote moneylineQuote) []draftKingsOutcome {
+	outcomes := []draftKingsOutcome{
+		{Participant: view.home.shortName, Role: "home", OddsAmerican: quote.home.String()},
+		{Participant: view.away.shortName, Role: "away", OddsAmerican: quote.away.String()},
+	}
+	if s.chaos.backgroundChance(draftKingsDuplicateOutcomeRate) {
+		outcomes = append(outcomes, outcomes[0])
+	}
+	return outcomes
 }
 
 func draftKingsEventID(view gameView) string {

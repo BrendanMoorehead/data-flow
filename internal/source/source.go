@@ -16,14 +16,23 @@ const (
 )
 
 type Config struct {
-	ID           canonical.SourceID
-	Kind         Kind
-	PollInterval time.Duration
-	StaleAfter   time.Duration
+	ID                     canonical.SourceID
+	Kind                   Kind
+	PollInterval           time.Duration
+	StaleAfter             time.Duration
+	RequestTimeout         time.Duration
+	CatalogRefreshInterval time.Duration
+	Workers                int
+	RequestsPerSecond      float64
+	RequestBurst           int
 }
 
 func (c Config) IsFresh(lastConfirmedAt, now time.Time) bool {
 	return now.Sub(lastConfirmedAt) <= c.StaleAfter
+}
+
+func (c Config) IsCatalogFresh(lastRefreshedAt, now time.Time) bool {
+	return now.Sub(lastRefreshedAt) <= c.CatalogRefreshInterval+c.StaleAfter
 }
 
 type Registry map[canonical.SourceID]Config

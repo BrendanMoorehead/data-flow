@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/BrendanMoorehead/data-flow/internal/canonical"
+	"github.com/BrendanMoorehead/data-flow/internal/provider"
 	"github.com/BrendanMoorehead/data-flow/internal/source"
 	"github.com/BrendanMoorehead/data-flow/internal/store"
 )
@@ -11,17 +12,21 @@ import (
 type healthState string
 
 const (
-	stateHealthy healthState = "healthy"
-	stateStale   healthState = "stale"
-	stateFailing healthState = "failing"
-	stateUnknown healthState = "unknown"
+	stateHealthy  healthState = "healthy"
+	stateUnknown  healthState = "unknown"
+	stateStale    healthState = "stale"
+	stateRetrying healthState = "retrying"
+	stateFailing  healthState = "failing"
 )
 
+const failingAfterConsecutiveFailures = 3
+
 var severityByState = map[healthState]int{
-	stateHealthy: 0,
-	stateUnknown: 1,
-	stateStale:   2,
-	stateFailing: 3,
+	stateHealthy:  0,
+	stateUnknown:  1,
+	stateStale:    2,
+	stateRetrying: 3,
+	stateFailing:  4,
 }
 
 type sliceStatusResponse struct {
@@ -29,6 +34,8 @@ type sliceStatusResponse struct {
 	State               healthState `json:"state"`
 	LastAttemptAt       time.Time   `json:"last_attempt_at"`
 	LastSuccessAt       *time.Time  `json:"last_success_at"`
+	SecondsSinceSuccess *float64    `json:"seconds_since_success"`
+	NextAttemptAt       time.Time   `json:"next_attempt_at"`
 	LastError           string      `json:"last_error,omitempty"`
 	LastErrorAt         *time.Time  `json:"last_error_at,omitempty"`
 	ConsecutiveFailures int         `json:"consecutive_failures"`
@@ -76,6 +83,8 @@ func sliceStatusFrom(config source.Config, health store.SliceHealth, now time.Ti
 		State:               sliceState(config, health, now),
 		LastAttemptAt:       health.LastAttemptAt,
 		LastSuccessAt:       health.LastSuccessAt,
+		SecondsSinceSuccess: secondsSince(health.LastSuccessAt, now),
+		NextAttemptAt:       health.NextAttemptAt,
 		LastError:           health.LastError,
 		LastErrorAt:         health.LastErrorAt,
 		ConsecutiveFailures: health.ConsecutiveFailures,
@@ -83,13 +92,23 @@ func sliceStatusFrom(config source.Config, health store.SliceHealth, now time.Ti
 }
 
 func sliceState(config source.Config, health store.SliceHealth, now time.Time) healthState {
-	if health.ConsecutiveFailures > 0 {
+	if health.ConsecutiveFailures >= failingAfterConsecutiveFailures {
 		return stateFailing
 	}
-	if health.LastSuccessAt == nil || !config.IsFresh(*health.LastSuccessAt, now) {
+	if health.ConsecutiveFailures > 0 {
+		return stateRetrying
+	}
+	if health.LastSuccessAt == nil || !isSliceFresh(config, health.Slice, *health.LastSuccessAt, now) {
 		return stateStale
 	}
 	return stateHealthy
+}
+
+func isSliceFresh(config source.Config, slice string, lastSuccessAt, now time.Time) bool {
+	if slice == provider.CatalogSlice {
+		return config.IsCatalogFresh(lastSuccessAt, now)
+	}
+	return config.IsFresh(lastSuccessAt, now)
 }
 
 func worstState(slices []sliceStatusResponse) healthState {
@@ -111,4 +130,12 @@ func groupBySource(healths []store.SliceHealth) map[canonical.SourceID][]store.S
 		grouped[health.Source] = append(grouped[health.Source], health)
 	}
 	return grouped
+}
+
+func secondsSince(moment *time.Time, now time.Time) *float64 {
+	if moment == nil {
+		return nil
+	}
+	seconds := now.Sub(*moment).Seconds()
+	return &seconds
 }

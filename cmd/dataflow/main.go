@@ -20,6 +20,7 @@ import (
 	"github.com/BrendanMoorehead/data-flow/internal/provider"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/aggregator"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/draftkings"
+	"github.com/BrendanMoorehead/data-flow/internal/ratelimit"
 	"github.com/BrendanMoorehead/data-flow/internal/resolve"
 	"github.com/BrendanMoorehead/data-flow/internal/sim"
 	"github.com/BrendanMoorehead/data-flow/internal/source"
@@ -30,7 +31,6 @@ import (
 const (
 	simDriftInterval = 1500 * time.Millisecond
 	resolveInterval  = time.Second
-	providerTimeout  = 5 * time.Second
 	shutdownTimeout  = 5 * time.Second
 )
 
@@ -39,7 +39,9 @@ type options struct {
 	apiAddress     string
 	aggregatorAddr string
 	draftKingsAddr string
+	simAdminAddr   string
 	seed           uint64
+	calm           bool
 }
 
 func main() {
@@ -60,7 +62,9 @@ func parseOptions() options {
 	flag.StringVar(&opts.apiAddress, "addr", "127.0.0.1:8080", "address for the read API")
 	flag.StringVar(&opts.aggregatorAddr, "aggregator-addr", "127.0.0.1:9101", "address for the simulated aggregator")
 	flag.StringVar(&opts.draftKingsAddr, "draftkings-addr", "127.0.0.1:9102", "address for the simulated DraftKings feed")
-	flag.Uint64Var(&opts.seed, "seed", 42, "seed for simulated price movement")
+	flag.StringVar(&opts.simAdminAddr, "sim-admin-addr", "127.0.0.1:9100", "address for the simulator's scenario admin API")
+	flag.Uint64Var(&opts.seed, "seed", 42, "seed for simulated price movement and background problems")
+	flag.BoolVar(&opts.calm, "calm", false, "turn off the simulator's background problems")
 	flag.Parse()
 	return opts
 }
@@ -71,9 +75,37 @@ func utcNow() time.Time {
 
 func sourceRegistry() source.Registry {
 	return source.NewRegistry(
-		source.Config{ID: canonical.SourceDraftKingsDirect, Kind: source.KindDirect, PollInterval: 3 * time.Second, StaleAfter: 12 * time.Second},
-		source.Config{ID: canonical.SourceAggregator, Kind: source.KindAggregator, PollInterval: 8 * time.Second, StaleAfter: 30 * time.Second},
+		source.Config{
+			ID:                     canonical.SourceDraftKingsDirect,
+			Kind:                   source.KindDirect,
+			PollInterval:           3 * time.Second,
+			StaleAfter:             12 * time.Second,
+			RequestTimeout:         2 * time.Second,
+			CatalogRefreshInterval: 30 * time.Second,
+			Workers:                3,
+			RequestsPerSecond:      10,
+			RequestBurst:           5,
+		},
+		source.Config{
+			ID:                     canonical.SourceAggregator,
+			Kind:                   source.KindAggregator,
+			PollInterval:           8 * time.Second,
+			StaleAfter:             30 * time.Second,
+			RequestTimeout:         4 * time.Second,
+			CatalogRefreshInterval: time.Minute,
+			Workers:                1,
+			RequestsPerSecond:      2,
+			RequestBurst:           2,
+		},
 	)
+}
+
+func httpClientFor(config source.Config) *http.Client {
+	budget := ratelimit.NewBudget(config.RequestsPerSecond, config.RequestBurst)
+	return &http.Client{
+		Timeout:   config.RequestTimeout,
+		Transport: &ratelimit.Transport{Base: http.DefaultTransport, Budget: budget},
+	}
 }
 
 func run(ctx context.Context, opts options, logger *slog.Logger) error {
@@ -86,12 +118,11 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 		return err
 	}
 
-	world := sim.NewWorld(opts.seed, utcNow)
+	simulator := sim.New(sim.Options{Seed: opts.seed, BackgroundProblems: !opts.calm, Now: utcNow})
 	sources := sourceRegistry()
-	httpClient := &http.Client{Timeout: providerTimeout}
 	providers := []provider.Provider{
-		aggregator.New("http://"+opts.aggregatorAddr, httpClient),
-		draftkings.New("http://"+opts.draftKingsAddr, httpClient),
+		aggregator.New("http://"+opts.aggregatorAddr, httpClientFor(sources[canonical.SourceAggregator])),
+		draftkings.New("http://"+opts.draftKingsAddr, httpClientFor(sources[canonical.SourceDraftKingsDirect])),
 	}
 	synchronizer := syncer.New(syncer.Dependencies{
 		Providers: providers,
@@ -105,8 +136,9 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	apiServer := api.NewServer(db, sources, utcNow)
 
 	servers := []namedServer{
-		{name: "simulated aggregator", address: opts.aggregatorAddr, handler: world.AggregatorHandler()},
-		{name: "simulated draftkings", address: opts.draftKingsAddr, handler: world.DraftKingsHandler()},
+		{name: "simulated aggregator", address: opts.aggregatorAddr, handler: simulator.AggregatorHandler()},
+		{name: "simulated draftkings", address: opts.draftKingsAddr, handler: simulator.DraftKingsHandler()},
+		{name: "simulator admin", address: opts.simAdminAddr, handler: simulator.AdminHandler()},
 		{name: "api", address: opts.apiAddress, handler: apiServer.Handler()},
 	}
 	listeners, err := listenAll(servers)
@@ -118,11 +150,15 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	for index, server := range servers {
 		running.start(func() { serveUntilDone(ctx, server, listeners[index], logger) })
 	}
-	running.start(func() { world.Run(ctx, simDriftInterval) })
+	running.start(func() { simulator.Run(ctx, simDriftInterval) })
 	running.start(func() { synchronizer.Run(ctx) })
 	running.start(func() { rebuilder.Run(ctx, resolveInterval) })
 
-	logger.Info("data-flow running", "api", "http://"+opts.apiAddress, "db", opts.databasePath)
+	logger.Info("data-flow running",
+		"api", "http://"+opts.apiAddress,
+		"sim_admin", "http://"+opts.simAdminAddr,
+		"db", opts.databasePath,
+		"background_problems", !opts.calm)
 	running.wait()
 	return nil
 }

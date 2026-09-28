@@ -9,6 +9,8 @@ import (
 
 type SliceKey string
 
+const CatalogSlice = "catalog"
+
 type Rejection struct {
 	Reason string
 }

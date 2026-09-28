@@ -130,36 +130,66 @@ and staleness, disagreement, or a missing timestamp lowers it.
 
 ## Failure behavior
 
-- **Slices are isolated (#33, #36).** A failed slice backs off with
-  exponential backoff plus jitter. Every other slice keeps updating.
-- **Each provider has one shared request budget.** On a 429, the budget
-  honors `Retry-After`.
+- **A worker pool per provider (#43).** A dispatcher hands due slices to a
+  fixed pool of workers: 3 for each direct feed, 1 for the aggregator. A
+  slow slice ties up only one worker, and the per-source request timeout
+  (#45) caps how long it can do so. The trade-off: if every worker hangs at
+  once, that provider's other slices wait up to one timeout.
+- **Retries follow backoff, never a tight loop (#46).** After a failure, the
+  slice's next attempt is its poll interval doubled for each consecutive
+  failure, capped at 60s. Half of that delay is fixed and the other half is
+  random (jitter), so retries from many slices don't line up. One success
+  resets the count.
+- **Each provider has one shared request budget (#47).** A token bucket
+  limits the rate of requests. A 429 pauses the *whole* provider until its
+  `Retry-After`, because rate limits apply to the account, not to one slice.
+  This lives in an HTTP transport, so adapters don't know it exists.
+- **The catalog is refreshed periodically (#44).** If fetching the list of
+  slices fails, the last known list keeps being polled. A broken event list
+  doesn't stop healthy games from updating.
 - **Partial success is normal.** Results from successful slices are applied
-  straight away. Failed slices keep their last known state, and that state
-  gets older and eventually shows as stale.
+  straight away. A failed slice keeps its last known prices, which grow older
+  and eventually show as stale. An aggregator poll counts as successful only
+  if every page was fetched.
 - **A provider can go down entirely.** The API keeps serving the best local
-  answer: fall back to the other source, or serve the last known price marked
-  stale. `/status` shows the source as degraded or down.
+  answer. Once the DraftKings direct feed goes stale, DraftKings prices fall
+  back to the aggregator's copy. When the feed recovers, they switch back.
 
 ## Operability
 
-- `/status` shows each source and slice: its state (healthy, degraded, or
-  down), last success, last error, failure count, next retry, and freshness
-  against its staleness threshold.
-- Structured logs (`log/slog`) record one line per poll, carrying the source,
-  slice, outcome, duration, and how many observations were accepted, left
-  unchanged, or quarantined.
-- Every canonical price carries its source, `observed_at`,
-  `last_confirmed_at`, confidence level, and reasons, so a single API response
-  shows how trustworthy each price is.
+- `/status` shows each source and each slice: its state, last success, time
+  since that success, last error, consecutive failures, and `next_attempt_at`.
+  - **States (#48):** `healthy`; `retrying` (1–2 consecutive failures);
+    `failing` (3 or more); `stale` (no recent success).
+  - A source reports its worst slice's state.
+  - The `catalog` slice is judged against its refresh interval, not the
+    price staleness threshold.
+- Structured logs (`log/slog`) record one line per poll. Each line has the
+  source, slice, and duration, plus counts of observations inserted, only
+  confirmed, and rejected. A failure's line includes the error and the next
+  attempt time.
+- Every price carries its source, `observed_at`, `last_confirmed_at`, and
+  freshness against its source's threshold.
 
-## Simulator (#38, #39)
+## Simulator (#38, #39, #49–51)
 
-The simulator runs in the same binary as the sync engine, with one HTTP
-server per provider. Seeded random moves drift prices, move lines, and take
-markets off the board and back. Scripted scenarios cover repeatable failures
-such as an outage, aggregator lag, rate limiting, or malformed data. An admin
-endpoint lets a reviewer trigger a scenario while the system is running.
+The simulator runs in the same binary. It has one HTTP server per provider
+and an admin server on its own port.
+
+- **World.** Seeded random moves drift prices. Quote history is kept, so a
+  provider can serve an old or lagged price.
+- **Background problems, on by default (#49).** About 5% of DraftKings
+  requests return a 500. About 5% of responses carry the previous, older
+  quote (out of order). About 3% repeat an outcome (duplicate records). Run
+  with `-calm` to turn them off.
+- **Scripted scenarios (#50).** Triggered from the admin API:
+
+| Scenario | Effect |
+|---|---|
+| `draftkings-outage` | Every DraftKings request returns 503 |
+| `draftkings-slow` | Responses take 3s, longer than the 2s timeout |
+| `aggregator-rate-limit` | One request per 5s is allowed; the rest get 429 with `Retry-After` |
+| `aggregator-lag` | The aggregator serves prices from 20s ago |
 
 ## Proposed layout
 

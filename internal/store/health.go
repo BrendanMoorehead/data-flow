@@ -9,6 +9,14 @@ import (
 	"github.com/BrendanMoorehead/data-flow/internal/canonical"
 )
 
+type PollAttempt struct {
+	Source        canonical.SourceID
+	Slice         string
+	At            time.Time
+	NextAttemptAt time.Time
+	Err           error
+}
+
 type SliceHealth struct {
 	Source              canonical.SourceID
 	Slice               string
@@ -17,33 +25,44 @@ type SliceHealth struct {
 	LastError           string
 	LastErrorAt         *time.Time
 	ConsecutiveFailures int
+	NextAttemptAt       time.Time
 }
 
-func (s *Store) RecordPollSuccess(ctx context.Context, source canonical.SourceID, slice string, at time.Time) error {
+func (s *Store) RecordPollAttempt(ctx context.Context, attempt PollAttempt) error {
+	if attempt.Err == nil {
+		return s.recordPollSuccess(ctx, attempt)
+	}
+	return s.recordPollFailure(ctx, attempt)
+}
+
+func (s *Store) recordPollSuccess(ctx context.Context, attempt PollAttempt) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO slice_health (source, slice, last_attempt_at, last_success_at, consecutive_failures)
-		 VALUES (?, ?, ?, ?, 0)
+		`INSERT INTO slice_health (source, slice, last_attempt_at, last_success_at, consecutive_failures, next_attempt_at)
+		 VALUES (?, ?, ?, ?, 0, ?)
 		 ON CONFLICT (source, slice) DO UPDATE SET
 		     last_attempt_at = excluded.last_attempt_at,
 		     last_success_at = excluded.last_success_at,
-		     consecutive_failures = 0`,
-		source, slice, toMillis(at), toMillis(at))
+		     consecutive_failures = 0,
+		     next_attempt_at = excluded.next_attempt_at`,
+		attempt.Source, attempt.Slice, toMillis(attempt.At), toMillis(attempt.At), toMillis(attempt.NextAttemptAt))
 	if err != nil {
 		return fmt.Errorf("record poll success: %w", err)
 	}
 	return nil
 }
 
-func (s *Store) RecordPollFailure(ctx context.Context, source canonical.SourceID, slice string, at time.Time, pollErr error) error {
+func (s *Store) recordPollFailure(ctx context.Context, attempt PollAttempt) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO slice_health (source, slice, last_attempt_at, last_error, last_error_at, consecutive_failures)
-		 VALUES (?, ?, ?, ?, ?, 1)
+		`INSERT INTO slice_health (source, slice, last_attempt_at, last_error, last_error_at, consecutive_failures, next_attempt_at)
+		 VALUES (?, ?, ?, ?, ?, 1, ?)
 		 ON CONFLICT (source, slice) DO UPDATE SET
 		     last_attempt_at = excluded.last_attempt_at,
 		     last_error = excluded.last_error,
 		     last_error_at = excluded.last_error_at,
-		     consecutive_failures = slice_health.consecutive_failures + 1`,
-		source, slice, toMillis(at), pollErr.Error(), toMillis(at))
+		     consecutive_failures = slice_health.consecutive_failures + 1,
+		     next_attempt_at = excluded.next_attempt_at`,
+		attempt.Source, attempt.Slice, toMillis(attempt.At), attempt.Err.Error(), toMillis(attempt.At),
+		toMillis(attempt.NextAttemptAt))
 	if err != nil {
 		return fmt.Errorf("record poll failure: %w", err)
 	}
@@ -52,7 +71,8 @@ func (s *Store) RecordPollFailure(ctx context.Context, source canonical.SourceID
 
 func (s *Store) ListSliceHealth(ctx context.Context) ([]SliceHealth, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT source, slice, last_attempt_at, last_success_at, COALESCE(last_error, ''), last_error_at, consecutive_failures
+		`SELECT source, slice, last_attempt_at, last_success_at, COALESCE(last_error, ''), last_error_at,
+		        consecutive_failures, next_attempt_at
 		 FROM slice_health
 		 ORDER BY source, slice`)
 	if err != nil {
@@ -62,17 +82,24 @@ func (s *Store) ListSliceHealth(ctx context.Context) ([]SliceHealth, error) {
 
 	var healths []SliceHealth
 	for rows.Next() {
-		var health SliceHealth
-		var lastAttemptAt int64
-		var lastSuccessAt, lastErrorAt sql.NullInt64
-		if err := rows.Scan(&health.Source, &health.Slice, &lastAttemptAt, &lastSuccessAt,
-			&health.LastError, &lastErrorAt, &health.ConsecutiveFailures); err != nil {
+		health, err := scanSliceHealth(rows)
+		if err != nil {
 			return nil, err
 		}
-		health.LastAttemptAt = fromMillis(lastAttemptAt)
-		health.LastSuccessAt = fromNullableMillis(lastSuccessAt)
-		health.LastErrorAt = fromNullableMillis(lastErrorAt)
 		healths = append(healths, health)
 	}
 	return healths, rows.Err()
+}
+
+func scanSliceHealth(rows rowScanner) (SliceHealth, error) {
+	var health SliceHealth
+	var lastAttemptAt, nextAttemptAt int64
+	var lastSuccessAt, lastErrorAt sql.NullInt64
+	err := rows.Scan(&health.Source, &health.Slice, &lastAttemptAt, &lastSuccessAt,
+		&health.LastError, &lastErrorAt, &health.ConsecutiveFailures, &nextAttemptAt)
+	health.LastAttemptAt = fromMillis(lastAttemptAt)
+	health.LastSuccessAt = fromNullableMillis(lastSuccessAt)
+	health.LastErrorAt = fromNullableMillis(lastErrorAt)
+	health.NextAttemptAt = fromMillis(nextAttemptAt)
+	return health, err
 }

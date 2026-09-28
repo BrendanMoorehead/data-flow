@@ -1,0 +1,10 @@
+# Track Claude Code skills as part of the submission (see README "AI & Tools").
+# My global gitignore excludes .claude/, so re-include only skills/ here;
+# other local files like settings.local.json stay ignored.
+!.claude/
+.claude/*
+!.claude/skills/
+
+# Local SQLite state
+data-flow.db
+data-flow.db-*

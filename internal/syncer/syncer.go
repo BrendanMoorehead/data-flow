@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -79,55 +78,12 @@ func (s *Syncer) pollSlice(ctx context.Context, p provider.Provider, slice provi
 	if err != nil {
 		return err
 	}
-	counts, err := s.ingest(ctx, p.Source(), snapshot)
+	counts, err := s.ingest(ctx, sliceRef{source: p.Source(), slice: string(slice)}, snapshot)
 	if err != nil {
 		return err
 	}
 	s.logPoll(p.Source(), slice, counts, s.now().Sub(startedAt))
 	return nil
-}
-
-type ingestCounts struct {
-	inserted  int
-	confirmed int
-	rejected  int
-}
-
-func (s *Syncer) ingest(ctx context.Context, sourceID canonical.SourceID, snapshot provider.Snapshot) (ingestCounts, error) {
-	counts := ingestCounts{rejected: len(snapshot.Rejections)}
-	s.logRejections(sourceID, snapshot.Rejections)
-
-	receivedAt := s.now()
-	for _, observation := range snapshot.Observations {
-		result, err := s.recordObservation(ctx, observation, receivedAt)
-		if errors.Is(err, identity.ErrUnknownTeam) {
-			counts.rejected++
-			s.logger.Warn("observation rejected", "source", sourceID, "reason", err)
-			continue
-		}
-		if err != nil {
-			return counts, err
-		}
-		counts.add(result)
-	}
-	return counts, nil
-}
-
-func (s *Syncer) recordObservation(ctx context.Context, observation canonical.Observation, receivedAt time.Time) (store.RecordResult, error) {
-	eventID, err := s.events.ResolveEvent(ctx, observation.Source, observation.Event)
-	if err != nil {
-		return 0, err
-	}
-	return s.store.RecordObservation(ctx, eventID, observation, receivedAt)
-}
-
-func (c *ingestCounts) add(result store.RecordResult) {
-	switch result {
-	case store.RecordInserted:
-		c.inserted++
-	case store.RecordConfirmed:
-		c.confirmed++
-	}
 }
 
 func (s *Syncer) recordAttempt(ctx context.Context, sourceID canonical.SourceID, slice string, attemptedAt, nextAttemptAt time.Time, pollErr error) {
@@ -146,12 +102,7 @@ func (s *Syncer) logPoll(sourceID canonical.SourceID, slice provider.SliceKey, c
 		"slice", slice,
 		"inserted", counts.inserted,
 		"confirmed", counts.confirmed,
-		"rejected", counts.rejected,
+		"off_board_inferred", counts.offBoardInferred,
+		"quarantined", counts.quarantined,
 		"duration_ms", duration.Milliseconds())
-}
-
-func (s *Syncer) logRejections(sourceID canonical.SourceID, rejections []provider.Rejection) {
-	for _, rejection := range rejections {
-		s.logger.Warn("observation rejected", "source", sourceID, "reason", rejection.Reason)
-	}
 }

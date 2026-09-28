@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -22,6 +23,11 @@ const (
 	maxBookProbabilityDrift = 0.015
 	maxQuoteHistory         = 200
 
+	suspensionChancePerDrift = 0.08
+	oneSidedSuspensionChance = 0.3
+	minSuspension            = 10 * time.Second
+	maxSuspension            = 20 * time.Second
+
 	firstTipoffHourUTC = 23
 	gameSpacing        = 30 * time.Minute
 )
@@ -31,27 +37,44 @@ var books = []string{bookDraftKings, bookFanDuel}
 type team struct {
 	fullName  string
 	shortName string
+	nickname  string
 }
 
 var nbaTeams = []team{
-	{fullName: "Los Angeles Lakers", shortName: "LA Lakers"},
-	{fullName: "Boston Celtics", shortName: "BOS Celtics"},
-	{fullName: "Golden State Warriors", shortName: "GS Warriors"},
-	{fullName: "Denver Nuggets", shortName: "DEN Nuggets"},
-	{fullName: "Milwaukee Bucks", shortName: "MIL Bucks"},
-	{fullName: "Philadelphia 76ers", shortName: "PHI 76ers"},
-	{fullName: "New York Knicks", shortName: "NY Knicks"},
-	{fullName: "Miami Heat", shortName: "MIA Heat"},
-	{fullName: "Dallas Mavericks", shortName: "DAL Mavericks"},
-	{fullName: "Phoenix Suns", shortName: "PHO Suns"},
-	{fullName: "Oklahoma City Thunder", shortName: "OKC Thunder"},
-	{fullName: "Minnesota Timberwolves", shortName: "MIN Timberwolves"},
+	{fullName: "Los Angeles Lakers", shortName: "LA Lakers", nickname: "Lakers"},
+	{fullName: "Boston Celtics", shortName: "BOS Celtics", nickname: "Celtics"},
+	{fullName: "Golden State Warriors", shortName: "GS Warriors", nickname: "Warriors"},
+	{fullName: "Denver Nuggets", shortName: "DEN Nuggets", nickname: "Nuggets"},
+	{fullName: "Milwaukee Bucks", shortName: "MIL Bucks", nickname: "Bucks"},
+	{fullName: "Philadelphia 76ers", shortName: "PHI 76ers", nickname: "76ers"},
+	{fullName: "New York Knicks", shortName: "NY Knicks", nickname: "Knicks"},
+	{fullName: "Miami Heat", shortName: "MIA Heat", nickname: "Heat"},
+	{fullName: "Dallas Mavericks", shortName: "DAL Mavericks", nickname: "Mavericks"},
+	{fullName: "Phoenix Suns", shortName: "PHO Suns", nickname: "Suns"},
+	{fullName: "Oklahoma City Thunder", shortName: "OKC Thunder", nickname: "Thunder"},
+	{fullName: "Minnesota Timberwolves", shortName: "MIN Timberwolves", nickname: "Timberwolves"},
 }
 
 type moneylineQuote struct {
 	home      odds.American
 	away      odds.American
 	updatedAt time.Time
+}
+
+type side string
+
+const (
+	sideHome side = "home"
+	sideAway side = "away"
+)
+
+type suspension struct {
+	sides map[side]bool
+	until time.Time
+}
+
+func (s suspension) covers(suspendedSide side, now time.Time) bool {
+	return s.sides[suspendedSide] && now.Before(s.until)
 }
 
 type game struct {
@@ -61,6 +84,7 @@ type game struct {
 	startsAt            time.Time
 	homeFairProbability map[string]float64
 	quoteHistory        map[string][]moneylineQuote
+	suspensions         map[string]suspension
 }
 
 type world struct {
@@ -101,6 +125,7 @@ func (w *world) scheduleGames() []*game {
 			startsAt:            firstTipoff.Add(time.Duration(gameIndex) * gameSpacing),
 			homeFairProbability: make(map[string]float64, len(books)),
 			quoteHistory:        make(map[string][]moneylineQuote, len(books)),
+			suspensions:         make(map[string]suspension, len(books)),
 		}
 		w.openMarkets(scheduled)
 		games = append(games, scheduled)
@@ -126,6 +151,27 @@ func (w *world) driftOnePrice() {
 	step := w.randomBetween(-maxProbabilityStep, maxProbabilityStep)
 	drifting.homeFairProbability[book] = clampFairProbability(drifting.homeFairProbability[book] + step)
 	w.requote(drifting, book)
+	w.maybeSuspendMarket()
+}
+
+func (w *world) maybeSuspendMarket() {
+	if w.random.Float64() >= suspensionChancePerDrift {
+		return
+	}
+	suspended := w.games[w.random.IntN(len(w.games))]
+	book := books[w.random.IntN(len(books))]
+	duration := time.Duration(w.randomBetween(float64(minSuspension), float64(maxSuspension)))
+	suspended.suspensions[book] = suspension{sides: w.randomSuspendedSides(), until: w.now().Add(duration)}
+}
+
+func (w *world) randomSuspendedSides() map[side]bool {
+	if w.random.Float64() >= oneSidedSuspensionChance {
+		return map[side]bool{sideHome: true, sideAway: true}
+	}
+	if w.random.IntN(2) == 0 {
+		return map[side]bool{sideHome: true}
+	}
+	return map[side]bool{sideAway: true}
 }
 
 func (w *world) requote(quoted *game, book string) {
@@ -144,6 +190,7 @@ type gameView struct {
 	away         team
 	startsAt     time.Time
 	quoteHistory map[string][]moneylineQuote
+	suspensions  map[string]suspension
 }
 
 func (w *world) snapshot() []gameView {
@@ -158,9 +205,18 @@ func (w *world) snapshot() []gameView {
 			away:         scheduled.away,
 			startsAt:     scheduled.startsAt,
 			quoteHistory: cloneHistories(scheduled.quoteHistory),
+			suspensions:  maps.Clone(scheduled.suspensions),
 		})
 	}
 	return views
+}
+
+func (v gameView) isSuspended(book string, suspendedSide side, now time.Time) bool {
+	return v.suspensions[book].covers(suspendedSide, now)
+}
+
+func (v gameView) isAnySideSuspended(book string, now time.Time) bool {
+	return v.isSuspended(book, sideHome, now) || v.isSuspended(book, sideAway, now)
 }
 
 func (v gameView) currentQuote(book string) moneylineQuote {

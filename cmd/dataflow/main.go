@@ -20,6 +20,7 @@ import (
 	"github.com/BrendanMoorehead/data-flow/internal/provider"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/aggregator"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/draftkings"
+	"github.com/BrendanMoorehead/data-flow/internal/provider/fanduel"
 	"github.com/BrendanMoorehead/data-flow/internal/ratelimit"
 	"github.com/BrendanMoorehead/data-flow/internal/resolve"
 	"github.com/BrendanMoorehead/data-flow/internal/sim"
@@ -39,6 +40,7 @@ type options struct {
 	apiAddress     string
 	aggregatorAddr string
 	draftKingsAddr string
+	fanDuelAddr    string
 	simAdminAddr   string
 	seed           uint64
 	calm           bool
@@ -62,6 +64,7 @@ func parseOptions() options {
 	flag.StringVar(&opts.apiAddress, "addr", "127.0.0.1:8080", "address for the read API")
 	flag.StringVar(&opts.aggregatorAddr, "aggregator-addr", "127.0.0.1:9101", "address for the simulated aggregator")
 	flag.StringVar(&opts.draftKingsAddr, "draftkings-addr", "127.0.0.1:9102", "address for the simulated DraftKings feed")
+	flag.StringVar(&opts.fanDuelAddr, "fanduel-addr", "127.0.0.1:9103", "address for the simulated FanDuel feed")
 	flag.StringVar(&opts.simAdminAddr, "sim-admin-addr", "127.0.0.1:9100", "address for the simulator's scenario admin API")
 	flag.Uint64Var(&opts.seed, "seed", 42, "seed for simulated price movement and background problems")
 	flag.BoolVar(&opts.calm, "calm", false, "turn off the simulator's background problems")
@@ -85,6 +88,17 @@ func sourceRegistry() source.Registry {
 			Workers:                3,
 			RequestsPerSecond:      10,
 			RequestBurst:           5,
+		},
+		source.Config{
+			ID:                     canonical.SourceFanDuelDirect,
+			Kind:                   source.KindDirect,
+			PollInterval:           3 * time.Second,
+			StaleAfter:             12 * time.Second,
+			RequestTimeout:         2 * time.Second,
+			CatalogRefreshInterval: 30 * time.Second,
+			Workers:                1,
+			RequestsPerSecond:      5,
+			RequestBurst:           2,
 		},
 		source.Config{
 			ID:                     canonical.SourceAggregator,
@@ -123,6 +137,7 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	providers := []provider.Provider{
 		aggregator.New("http://"+opts.aggregatorAddr, httpClientFor(sources[canonical.SourceAggregator])),
 		draftkings.New("http://"+opts.draftKingsAddr, httpClientFor(sources[canonical.SourceDraftKingsDirect])),
+		fanduel.New("http://"+opts.fanDuelAddr, httpClientFor(sources[canonical.SourceFanDuelDirect])),
 	}
 	synchronizer := syncer.New(syncer.Dependencies{
 		Providers: providers,
@@ -138,6 +153,7 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	servers := []namedServer{
 		{name: "simulated aggregator", address: opts.aggregatorAddr, handler: simulator.AggregatorHandler()},
 		{name: "simulated draftkings", address: opts.draftKingsAddr, handler: simulator.DraftKingsHandler()},
+		{name: "simulated fanduel", address: opts.fanDuelAddr, handler: simulator.FanDuelHandler()},
 		{name: "simulator admin", address: opts.simAdminAddr, handler: simulator.AdminHandler()},
 		{name: "api", address: opts.apiAddress, handler: apiServer.Handler()},
 	}

@@ -80,6 +80,7 @@ type quoteContext struct {
 
 func snapshotFromGames(games []gameJSON) provider.Snapshot {
 	var builder provider.SnapshotBuilder
+	builder.MarkMissingAsOffBoard()
 	for _, game := range games {
 		addGame(&builder, game)
 	}
@@ -89,7 +90,7 @@ func snapshotFromGames(games []gameJSON) provider.Snapshot {
 func addGame(builder *provider.SnapshotBuilder, game gameJSON) {
 	event, err := providerEventFrom(game)
 	if err != nil {
-		builder.Reject("game %s: %v", game.ID, err)
+		builder.Reject(game, "game %s: %v", game.ID, err)
 		return
 	}
 	for _, bookmaker := range game.Bookmakers {
@@ -100,7 +101,7 @@ func addGame(builder *provider.SnapshotBuilder, game gameJSON) {
 func addBookmaker(builder *provider.SnapshotBuilder, gameID string, event canonical.ProviderEvent, bookmaker bookmakerJSON) {
 	book, known := bookBySportsbookName[bookmaker.Key]
 	if !known {
-		builder.Reject("game %s: unknown sportsbook %q", gameID, bookmaker.Key)
+		builder.Reject(bookmaker, "game %s: unknown sportsbook %q", gameID, bookmaker.Key)
 		return
 	}
 	quote := quoteContext{gameID: gameID, event: event, book: book, observedAt: bookmaker.LastUpdate}
@@ -115,7 +116,7 @@ func addMoneylineOutcomes(builder *provider.SnapshotBuilder, quote quoteContext,
 	for _, outcome := range outcomes {
 		observation, err := moneylineObservation(quote, outcome)
 		if err != nil {
-			builder.Reject("game %s, %s: %v", quote.gameID, quote.book, err)
+			builder.Reject(outcome, "game %s, %s: %v", quote.gameID, quote.book, err)
 			continue
 		}
 		builder.Add(observation)
@@ -132,15 +133,17 @@ func moneylineObservation(quote quoteContext, outcome outcomeJSON) (canonical.Ob
 		return canonical.Observation{}, err
 	}
 	return canonical.Observation{
-		Source:     canonical.SourceAggregator,
-		Book:       quote.book,
-		Event:      quote.event,
-		Market:     canonical.MarketMoneyline,
-		Side:       side,
-		Price:      price,
-		RawPrice:   strconv.FormatFloat(outcome.Price, 'f', -1, 64),
-		RawFormat:  canonical.FormatDecimal,
-		ObservedAt: quote.observedAt,
+		Source:             canonical.SourceAggregator,
+		Book:               quote.book,
+		Event:              quote.event,
+		Market:             canonical.MarketMoneyline,
+		Side:               side,
+		Status:             canonical.StatusOpen,
+		Price:              price,
+		RawPrice:           strconv.FormatFloat(outcome.Price, 'f', -1, 64),
+		RawFormat:          canonical.FormatDecimal,
+		ObservedAt:         quote.observedAt,
+		HasSourceTimestamp: true,
 	}, nil
 }
 

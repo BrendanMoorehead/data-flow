@@ -15,6 +15,7 @@ import (
 	"github.com/BrendanMoorehead/data-flow/internal/provider"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/aggregator"
 	"github.com/BrendanMoorehead/data-flow/internal/provider/draftkings"
+	"github.com/BrendanMoorehead/data-flow/internal/provider/fanduel"
 	"github.com/BrendanMoorehead/data-flow/internal/resolve"
 	"github.com/BrendanMoorehead/data-flow/internal/sim"
 	"github.com/BrendanMoorehead/data-flow/internal/source"
@@ -26,6 +27,7 @@ const simulatedGameCount = 6
 
 var testSources = source.NewRegistry(
 	source.Config{ID: canonical.SourceDraftKingsDirect, Kind: source.KindDirect, PollInterval: time.Second, StaleAfter: time.Minute},
+	source.Config{ID: canonical.SourceFanDuelDirect, Kind: source.KindDirect, PollInterval: time.Second, StaleAfter: time.Minute},
 	source.Config{ID: canonical.SourceAggregator, Kind: source.KindAggregator, PollInterval: time.Second, StaleAfter: time.Minute},
 )
 
@@ -42,8 +44,10 @@ func newPipeline(t *testing.T) pipeline {
 	simulator := sim.New(sim.Options{Seed: 7, BackgroundProblems: false, Now: time.Now})
 	aggregatorServer := httptest.NewServer(simulator.AggregatorHandler())
 	draftKingsServer := httptest.NewServer(simulator.DraftKingsHandler())
+	fanDuelServer := httptest.NewServer(simulator.FanDuelHandler())
 	t.Cleanup(aggregatorServer.Close)
 	t.Cleanup(draftKingsServer.Close)
+	t.Cleanup(fanDuelServer.Close)
 
 	testStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "pipeline.db"))
 	if err != nil {
@@ -58,6 +62,7 @@ func newPipeline(t *testing.T) pipeline {
 	providers := []provider.Provider{
 		aggregator.New(aggregatorServer.URL, http.DefaultClient),
 		draftkings.New(draftKingsServer.URL, http.DefaultClient),
+		fanduel.New(fanDuelServer.URL, http.DefaultClient),
 	}
 	return pipeline{
 		store: testStore,
@@ -98,7 +103,7 @@ func TestProvidersWithDifferentIdentifiersMergeIntoOneEventPerGame(t *testing.T)
 	}
 }
 
-func TestDirectFeedWinsForItsBookAndAggregatorFillsTheOther(t *testing.T) {
+func TestEachBookIsServedFromItsOwnDirectFeed(t *testing.T) {
 	testPipeline := newPipeline(t)
 
 	testPipeline.pollEveryProvider(t)
@@ -110,7 +115,7 @@ func TestDirectFeedWinsForItsBookAndAggregatorFillsTheOther(t *testing.T) {
 	}
 	wantSourceByBook := map[canonical.BookID]canonical.SourceID{
 		canonical.BookDraftKings: canonical.SourceDraftKingsDirect,
-		canonical.BookFanDuel:    canonical.SourceAggregator,
+		canonical.BookFanDuel:    canonical.SourceFanDuelDirect,
 	}
 	for _, price := range prices {
 		if price.Source != wantSourceByBook[price.Key.Book] {

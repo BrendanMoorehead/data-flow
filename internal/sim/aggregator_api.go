@@ -62,7 +62,7 @@ func (s *Simulator) serveAggregatorOdds(rw http.ResponseWriter, r *http.Request)
 	}
 	var games []aggregatorGame
 	if r.URL.Query().Get("sport") == aggregatorSportNBA {
-		games = aggregatorGamesFrom(s.world.snapshot(), s.aggregatorPricesAsOf())
+		games = aggregatorGamesFrom(s.world.snapshot(), s.aggregatorPricesAsOf(), s.now())
 	}
 	pageGames, totalPages := paginate(games, page, aggregatorPageSize)
 	httpserve.WriteJSON(rw, http.StatusOK, aggregatorPage{Page: page, TotalPages: totalPages, Data: pageGames})
@@ -75,18 +75,18 @@ func (s *Simulator) aggregatorPricesAsOf() time.Time {
 	return s.now()
 }
 
-func aggregatorGamesFrom(views []gameView, pricesAsOf time.Time) []aggregatorGame {
+func aggregatorGamesFrom(views []gameView, pricesAsOf, now time.Time) []aggregatorGame {
 	games := make([]aggregatorGame, 0, len(views))
 	for _, view := range views {
-		games = append(games, aggregatorGameFrom(view, pricesAsOf))
+		games = append(games, aggregatorGameFrom(view, pricesAsOf, now))
 	}
 	return games
 }
 
-func aggregatorGameFrom(view gameView, pricesAsOf time.Time) aggregatorGame {
+func aggregatorGameFrom(view gameView, pricesAsOf, now time.Time) aggregatorGame {
 	bookmakers := make([]aggregatorBookmaker, 0, len(books))
 	for _, book := range books {
-		bookmakers = append(bookmakers, aggregatorBookmakerFrom(view.quoteAsOf(book, pricesAsOf), view, book))
+		bookmakers = append(bookmakers, aggregatorBookmakerFrom(view, book, view.quoteAsOf(book, pricesAsOf), now))
 	}
 	return aggregatorGame{
 		ID:           fmt.Sprintf("agg-%d", aggregatorEventIDOffset+view.number),
@@ -98,18 +98,24 @@ func aggregatorGameFrom(view gameView, pricesAsOf time.Time) aggregatorGame {
 	}
 }
 
-func aggregatorBookmakerFrom(quote moneylineQuote, view gameView, book string) aggregatorBookmaker {
-	return aggregatorBookmaker{
-		Key:        book,
-		LastUpdate: quote.updatedAt,
-		Markets: []aggregatorMarket{{
-			Key: aggregatorMarketMoneyline,
-			Outcomes: []aggregatorOutcome{
-				{Name: view.home.fullName, Price: roundToCents(float64(quote.home.Decimal()))},
-				{Name: view.away.fullName, Price: roundToCents(float64(quote.away.Decimal()))},
-			},
-		}},
+func aggregatorBookmakerFrom(view gameView, book string, quote moneylineQuote, now time.Time) aggregatorBookmaker {
+	bookmaker := aggregatorBookmaker{Key: book, LastUpdate: quote.updatedAt, Markets: []aggregatorMarket{}}
+	outcomes := aggregatorOutcomesOnTheBoard(view, book, quote, now)
+	if len(outcomes) > 0 {
+		bookmaker.Markets = append(bookmaker.Markets, aggregatorMarket{Key: aggregatorMarketMoneyline, Outcomes: outcomes})
 	}
+	return bookmaker
+}
+
+func aggregatorOutcomesOnTheBoard(view gameView, book string, quote moneylineQuote, now time.Time) []aggregatorOutcome {
+	var outcomes []aggregatorOutcome
+	if !view.isSuspended(book, sideHome, now) {
+		outcomes = append(outcomes, aggregatorOutcome{Name: view.home.fullName, Price: roundToCents(float64(quote.home.Decimal()))})
+	}
+	if !view.isSuspended(book, sideAway, now) {
+		outcomes = append(outcomes, aggregatorOutcome{Name: view.away.fullName, Price: roundToCents(float64(quote.away.Decimal()))})
+	}
+	return outcomes
 }
 
 func pageNumber(r *http.Request) (int, error) {

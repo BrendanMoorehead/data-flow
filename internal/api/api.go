@@ -58,5 +58,11 @@ func (s *Server) serveStatus(w http.ResponseWriter, r *http.Request) {
 		httpserve.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	httpserve.WriteJSON(w, http.StatusOK, statusResponseFrom(s.sources, healths, s.now()))
+	quarantined, err := s.store.QuarantineCountsBySource(r.Context())
+	if err != nil {
+		httpserve.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	inputs := statusInputs{healths: healths, quarantined: quarantined, now: s.now()}
+	httpserve.WriteJSON(w, http.StatusOK, statusResponseFrom(s.sources, inputs))
 }

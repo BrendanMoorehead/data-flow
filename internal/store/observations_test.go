@@ -42,15 +42,21 @@ func createTestEvent(t *testing.T, testStore *Store) canonical.EventID {
 
 func homeMoneyline(price odds.American, observedAt time.Time) canonical.Observation {
 	return canonical.Observation{
-		Source:     canonical.SourceDraftKingsDirect,
-		Book:       canonical.BookDraftKings,
-		Market:     canonical.MarketMoneyline,
-		Side:       canonical.SideHome,
-		Price:      price.Decimal(),
-		RawPrice:   price.String(),
-		RawFormat:  canonical.FormatAmerican,
-		ObservedAt: observedAt,
+		Source:             canonical.SourceDraftKingsDirect,
+		Book:               canonical.BookDraftKings,
+		Market:             canonical.MarketMoneyline,
+		Side:               canonical.SideHome,
+		Status:             canonical.StatusOpen,
+		Price:              price.Decimal(),
+		RawPrice:           price.String(),
+		RawFormat:          canonical.FormatAmerican,
+		ObservedAt:         observedAt,
+		HasSourceTimestamp: true,
 	}
+}
+
+func record(eventID canonical.EventID, observation canonical.Observation, receivedAt time.Time) ObservationRecord {
+	return ObservationRecord{EventID: eventID, Slice: "dk-5501", Observation: observation, ReceivedAt: receivedAt}
 }
 
 func TestRecordObservationTwiceStoresOnceAndMovesConfirmation(t *testing.T) {
@@ -61,11 +67,11 @@ func TestRecordObservationTwiceStoresOnceAndMovesConfirmation(t *testing.T) {
 	firstReceipt := testObservedAt.Add(time.Second)
 	secondReceipt := testObservedAt.Add(5 * time.Second)
 
-	firstResult, err := testStore.RecordObservation(ctx, eventID, observation, firstReceipt)
+	firstResult, err := testStore.RecordObservation(ctx, record(eventID, observation, firstReceipt))
 	if err != nil {
 		t.Fatalf("first record: %v", err)
 	}
-	secondResult, err := testStore.RecordObservation(ctx, eventID, observation, secondReceipt)
+	secondResult, err := testStore.RecordObservation(ctx, record(eventID, observation, secondReceipt))
 	if err != nil {
 		t.Fatalf("second record: %v", err)
 	}
@@ -90,7 +96,7 @@ func TestLatestSourcePricesIgnoresOutOfOrderObservation(t *testing.T) {
 	older := homeMoneyline(-105, testObservedAt)
 
 	for _, observation := range []canonical.Observation{newer, older} {
-		if _, err := testStore.RecordObservation(ctx, eventID, observation, testObservedAt.Add(time.Minute)); err != nil {
+		if _, err := testStore.RecordObservation(ctx, record(eventID, observation, testObservedAt.Add(time.Minute))); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}

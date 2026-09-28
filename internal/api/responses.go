@@ -24,16 +24,23 @@ type freshnessResponse struct {
 	IsStale           bool    `json:"is_stale"`
 }
 
+type confidenceResponse struct {
+	Level   canonical.ConfidenceLevel    `json:"level"`
+	Reasons []canonical.ConfidenceReason `json:"reasons"`
+}
+
 type priceResponse struct {
-	Book            canonical.BookID     `json:"book"`
-	Market          canonical.MarketType `json:"market"`
-	Side            canonical.Side       `json:"side"`
-	PriceDecimal    float64              `json:"price_decimal"`
-	PriceAmerican   int                  `json:"price_american"`
-	Source          canonical.SourceID   `json:"source"`
-	ObservedAt      time.Time            `json:"observed_at"`
-	LastConfirmedAt time.Time            `json:"last_confirmed_at"`
-	Freshness       freshnessResponse    `json:"freshness"`
+	Book            canonical.BookID       `json:"book"`
+	Market          canonical.MarketType   `json:"market"`
+	Side            canonical.Side         `json:"side"`
+	Status          canonical.MarketStatus `json:"status"`
+	PriceDecimal    float64                `json:"price_decimal"`
+	PriceAmerican   int                    `json:"price_american"`
+	Source          canonical.SourceID     `json:"source"`
+	ObservedAt      time.Time              `json:"observed_at"`
+	LastConfirmedAt time.Time              `json:"last_confirmed_at"`
+	Freshness       freshnessResponse      `json:"freshness"`
+	Confidence      confidenceResponse     `json:"confidence"`
 }
 
 type oddsResponse struct {
@@ -64,12 +71,14 @@ func (s *Server) oddsResponseFrom(eventID int64, prices []canonical.ResolvedPric
 			Book:            price.Key.Book,
 			Market:          price.Key.Market,
 			Side:            price.Key.Side,
+			Status:          price.Status,
 			PriceDecimal:    float64(price.Price),
 			PriceAmerican:   int(price.Price.American()),
 			Source:          price.Source,
 			ObservedAt:      price.ObservedAt,
 			LastConfirmedAt: price.LastConfirmedAt,
 			Freshness:       s.freshnessOf(price, now),
+			Confidence:      confidenceResponse{Level: price.Confidence.Level, Reasons: price.Confidence.Reasons},
 		})
 	}
 	return response

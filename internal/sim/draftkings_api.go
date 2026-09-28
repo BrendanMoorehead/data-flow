@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	draftKingsLeagueNBA       = "NBA"
-	draftKingsOfferMoneyline  = "MONEYLINE"
-	draftKingsOfferStatusOpen = "OPEN"
-	draftKingsEventIDOffset   = 5500
+	draftKingsLeagueNBA            = "NBA"
+	draftKingsOfferMoneyline       = "MONEYLINE"
+	draftKingsOfferStatusOpen      = "OPEN"
+	draftKingsOfferStatusSuspended = "SUSPENDED"
+	draftKingsEventIDOffset        = 5500
 )
 
 type draftKingsEventList struct {
@@ -101,11 +102,18 @@ func (s *Simulator) draftKingsEventOffersFrom(view gameView) draftKingsEventOffe
 		},
 		Offers: []draftKingsOffer{{
 			Type:      draftKingsOfferMoneyline,
-			Status:    draftKingsOfferStatusOpen,
+			Status:    s.draftKingsOfferStatus(view),
 			UpdatedAt: quote.updatedAt,
 			Outcomes:  s.draftKingsOutcomes(view, quote),
 		}},
 	}
+}
+
+func (s *Simulator) draftKingsOfferStatus(view gameView) string {
+	if view.isAnySideSuspended(bookDraftKings, s.now()) {
+		return draftKingsOfferStatusSuspended
+	}
+	return draftKingsOfferStatusOpen
 }
 
 func (s *Simulator) draftKingsQuote(view gameView) moneylineQuote {

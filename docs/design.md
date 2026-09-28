@@ -14,8 +14,8 @@ schemas are invented and don't reproduce either book's real API.
 | Source | Kind | Schema traits | How off the board is shown |
 |---|---|---|---|
 | `aggregator` | Third-party paid API, covers both books | Decimal odds, its own event IDs and team spellings, paged, rate limited, lags behind the books | The market is left out of a snapshot (#16) |
-| `draftkings_direct` | Direct feed | American odds, provider timestamp, supplies its own main-line flag | Explicit `suspended` status |
-| `fanduel_direct` | Direct feed | A different shape from DraftKings', **no timestamps** (#32) | Explicit `suspended` status |
+| `draftkings_direct` | Direct feed, one slice per game | American odds as strings, a timestamp on each offer, abbreviated team names | `SUSPENDED` on the whole offer |
+| `fanduel_direct` | Direct feed, one slice per league (#52) | American odds as integers, nickname-only teams, epoch-second start times, **no timestamps** (#32), and a price is occasionally missing (#53) | `SUSPENDED` on each side separately |
 
 Every source is polled as a **full refresh** (#33). Each adapter splits its
 provider into **slices** that match how that provider's site divides its data,
@@ -93,8 +93,14 @@ is just a recompute.
 
 ## Rules
 
-**Duplicates.** The content key is a hash of source, book, market, line,
-side, price, status, and provider timestamp. Seeing the same observation
+**Sanity checks and quarantine (#20, #54, #55).** Before storage, any record
+the adapter can't parse goes to `quarantined_observations` with its raw JSON
+and a reason. So does any market whose two open sides imply a book margin
+outside 1.00–1.15. A single open side passes, because one side can
+legitimately be off the board.
+
+**Duplicates.** The content key is a hash of source, book, market, side,
+status, price, and provider timestamp. Seeing the same observation
 twice stores nothing new and only moves `last_confirmed_at` forward.
 
 **Ordering (#31).** "Newer" always means the provider's timestamp. An
@@ -103,30 +109,47 @@ the current price. When a source has no timestamp, the time we received it is
 used, confidence is capped at medium, and a `no_source_timestamp` reason is
 added (#32).
 
-**Precedence (#15).** For each book, the direct feed wins while it's fresh.
-When it goes stale, the aggregator is used. Every canonical price names the
-source it came from.
+**Precedence (#15).** For each book, the direct feed's price wins while it's
+fresh. When it goes stale, the aggregator's price is used. Every price names
+the source it came from.
 
 **Freshness (#21, #28).** A successful poll of a slice counts as its
 heartbeat. Each source has its own staleness threshold, because the aggregator
 is expected to lag.
 
-**Off the board (#17, #22, #25).**
-- Any fresh source can mark a market off the board.
-- A missing market counts as off the board only when its slice was fetched
-  successfully and completely.
-- A newer observation that isn't off the board puts the market back on.
-- When unsure, we err toward off the board.
+**Off the board (#17, #22, #25, #56–59).**
+- A market's status comes from its **most recent fresh observation**. Any
+  fresh source can take a market off the board, and a newer open observation
+  puts it back on. On a timestamp tie, off the board wins.
+- The aggregator shows off the board by leaving a market out. After a
+  **complete** snapshot, the syncer compares the slice with that source's
+  last known markets. Each missing one gets an `off_board` record at poll
+  time. If that source's latest record is already off the board, it's only
+  confirmed. This keeps the time it went off fixed, and stops the market
+  flipping back and forth while a direct feed disagrees.
+- A market that is off the board still carries its **last known price**. The
+  `status` field is the main indicator.
 
 **Main line (#18).** We work out the main line ourselves: the line whose sides
 are closest to a 50/50 implied probability. A provider's main-line flag is one
 input, not the answer.
 
-**Confidence (#26, #27).** The API shows a level (`high`, `medium`, or `low`)
-plus the reasons behind it. The direct feed and the aggregator agree when
-their implied probabilities are within a tolerance, compared on the same line.
-The comparison allows for the aggregator's lag. Agreement raises confidence,
-and staleness, disagreement, or a missing timestamp lowers it.
+**Confidence (#26, #27, #60–62).** Every price has a level plus the reasons
+behind it. The served price is compared with the best other fresh source for
+the same book, market, and side:
+
+| Level | When |
+|---|---|
+| `verified` | The two sources match exactly, compared at 2 decimals, the aggregator's precision |
+| `high` | Their implied probabilities are within 1.5 percentage points |
+| `medium` | Only one fresh source, or the served source has no timestamps (capped) |
+| `low` | The sources disagree, or every source is stale |
+
+The reasons come from a fixed list: `direct_fresh`, `direct_stale`,
+`sources_match`, `sources_agree`, `sources_disagree`, `no_second_source`,
+`no_source_timestamp`, `all_sources_stale`. The comparison uses the direct
+feed's *current* price, so while the aggregator lags, its prices honestly
+show `sources_disagree`.
 
 ## Failure behavior
 
@@ -168,8 +191,9 @@ and staleness, disagreement, or a missing timestamp lowers it.
   source, slice, and duration, plus counts of observations inserted, only
   confirmed, and rejected. A failure's line includes the error and the next
   attempt time.
-- Every price carries its source, `observed_at`, `last_confirmed_at`, and
-  freshness against its source's threshold.
+- Every price carries its status, source, `observed_at`, `last_confirmed_at`,
+  freshness against its source's threshold, and confidence with reasons.
+- `/status` shows how many observations each source has had quarantined.
 
 ## Simulator (#38, #39, #49–51)
 
@@ -180,8 +204,12 @@ and an admin server on its own port.
   provider can serve an old or lagged price.
 - **Background problems, on by default (#49).** About 5% of DraftKings
   requests return a 500. About 5% of responses carry the previous, older
-  quote (out of order). About 3% repeat an outcome (duplicate records). Run
-  with `-calm` to turn them off.
+  quote (out of order). About 3% repeat an outcome (duplicate records).
+  About 3% of FanDuel prices are missing. Run with `-calm` to turn them off.
+- **Markets go off the board (#63).** Now and then, a book's market for one
+  game is suspended for 10–20s, sometimes on one side only. Each provider
+  shows this in its own way (see Sources). This is normal market behavior,
+  so it also happens with `-calm`.
 - **Scripted scenarios (#50).** Triggered from the admin API:
 
 | Scenario | Effect |

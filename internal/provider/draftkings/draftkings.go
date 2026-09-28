@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"time"
 
 	"github.com/BrendanMoorehead/data-flow/internal/canonical"
 	"github.com/BrendanMoorehead/data-flow/internal/odds"
@@ -13,8 +12,9 @@ import (
 )
 
 const (
-	leagueNBA          = "NBA"
-	offerTypeMoneyline = "MONEYLINE"
+	leagueNBA            = "NBA"
+	offerTypeMoneyline   = "MONEYLINE"
+	offerStatusSuspended = "SUSPENDED"
 )
 
 var sideByRole = map[string]canonical.Side{
@@ -74,16 +74,16 @@ func snapshotFromEventOffers(response eventOffersJSON) provider.Snapshot {
 
 func addMoneylineOutcomes(builder *provider.SnapshotBuilder, event canonical.ProviderEvent, offer offerJSON) {
 	for _, outcome := range offer.Outcomes {
-		observation, err := moneylineObservation(event, offer.UpdatedAt, outcome)
+		observation, err := moneylineObservation(event, offer, outcome)
 		if err != nil {
-			builder.Reject("event %s: %v", event.ProviderEventID, err)
+			builder.Reject(outcome, "event %s: %v", event.ProviderEventID, err)
 			continue
 		}
 		builder.Add(observation)
 	}
 }
 
-func moneylineObservation(event canonical.ProviderEvent, updatedAt time.Time, outcome outcomeJSON) (canonical.Observation, error) {
+func moneylineObservation(event canonical.ProviderEvent, offer offerJSON, outcome outcomeJSON) (canonical.Observation, error) {
 	side, known := sideByRole[outcome.Role]
 	if !known {
 		return canonical.Observation{}, fmt.Errorf("unknown outcome role %q", outcome.Role)
@@ -93,16 +93,25 @@ func moneylineObservation(event canonical.ProviderEvent, updatedAt time.Time, ou
 		return canonical.Observation{}, err
 	}
 	return canonical.Observation{
-		Source:     canonical.SourceDraftKingsDirect,
-		Book:       canonical.BookDraftKings,
-		Event:      event,
-		Market:     canonical.MarketMoneyline,
-		Side:       side,
-		Price:      price.Decimal(),
-		RawPrice:   outcome.OddsAmerican,
-		RawFormat:  canonical.FormatAmerican,
-		ObservedAt: updatedAt,
+		Source:             canonical.SourceDraftKingsDirect,
+		Book:               canonical.BookDraftKings,
+		Event:              event,
+		Market:             canonical.MarketMoneyline,
+		Side:               side,
+		Status:             statusOf(offer),
+		Price:              price.Decimal(),
+		RawPrice:           outcome.OddsAmerican,
+		RawFormat:          canonical.FormatAmerican,
+		ObservedAt:         offer.UpdatedAt,
+		HasSourceTimestamp: true,
 	}, nil
+}
+
+func statusOf(offer offerJSON) canonical.MarketStatus {
+	if offer.Status == offerStatusSuspended {
+		return canonical.StatusOffBoard
+	}
+	return canonical.StatusOpen
 }
 
 func providerEventFrom(event eventJSON) canonical.ProviderEvent {

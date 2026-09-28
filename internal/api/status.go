@@ -46,6 +46,7 @@ type sourceStatusResponse struct {
 	Kind              source.Kind           `json:"kind"`
 	State             healthState           `json:"state"`
 	StaleAfterSeconds float64               `json:"stale_after_seconds"`
+	Quarantined       int                   `json:"quarantined_observations"`
 	Slices            []sliceStatusResponse `json:"slices"`
 }
 
@@ -54,11 +55,19 @@ type statusResponse struct {
 	Sources     []sourceStatusResponse `json:"sources"`
 }
 
-func statusResponseFrom(sources source.Registry, healths []store.SliceHealth, now time.Time) statusResponse {
-	healthsBySource := groupBySource(healths)
-	response := statusResponse{GeneratedAt: now}
+type statusInputs struct {
+	healths     []store.SliceHealth
+	quarantined map[canonical.SourceID]int
+	now         time.Time
+}
+
+func statusResponseFrom(sources source.Registry, inputs statusInputs) statusResponse {
+	healthsBySource := groupBySource(inputs.healths)
+	response := statusResponse{GeneratedAt: inputs.now}
 	for _, config := range sources.SortedByID() {
-		response.Sources = append(response.Sources, sourceStatusFrom(config, healthsBySource[config.ID], now))
+		status := sourceStatusFrom(config, healthsBySource[config.ID], inputs.now)
+		status.Quarantined = inputs.quarantined[config.ID]
+		response.Sources = append(response.Sources, status)
 	}
 	return response
 }

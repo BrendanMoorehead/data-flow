@@ -65,19 +65,9 @@ func (r *Rebuilder) candidatesByKey(latest []canonical.SourcePrice) map[canonica
 func resolveAll(candidatesByKey map[canonical.PriceKey][]Candidate, now time.Time) []canonical.ResolvedPrice {
 	resolved := make([]canonical.ResolvedPrice, 0, len(candidatesByKey))
 	for _, candidates := range candidatesByKey {
-		if preferred, found := SelectPreferred(candidates, now); found {
-			resolved = append(resolved, resolvedPriceFrom(preferred))
+		if price, found := Resolve(candidates, now); found {
+			resolved = append(resolved, price)
 		}
 	}
 	return resolved
-}
-
-func resolvedPriceFrom(candidate Candidate) canonical.ResolvedPrice {
-	return canonical.ResolvedPrice{
-		Key:             candidate.Key,
-		Price:           candidate.Price,
-		Source:          candidate.Source,
-		ObservedAt:      candidate.ObservedAt,
-		LastConfirmedAt: candidate.LastConfirmedAt,
-	}
 }

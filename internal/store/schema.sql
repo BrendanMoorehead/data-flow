@@ -29,33 +29,50 @@ CREATE TABLE IF NOT EXISTS event_source_refs (
 
 CREATE TABLE IF NOT EXISTS observations (
     id                INTEGER PRIMARY KEY,
-    content_key       TEXT    NOT NULL UNIQUE,
-    source            TEXT    NOT NULL,
-    book              TEXT    NOT NULL,
-    event_id          INTEGER NOT NULL REFERENCES events (id),
-    market            TEXT    NOT NULL,
-    side              TEXT    NOT NULL,
-    decimal_price     REAL    NOT NULL,
-    raw_price         TEXT    NOT NULL,
-    raw_format        TEXT    NOT NULL,
-    observed_at       INTEGER NOT NULL,
-    received_at       INTEGER NOT NULL,
-    last_confirmed_at INTEGER NOT NULL
+    content_key          TEXT    NOT NULL UNIQUE,
+    source               TEXT    NOT NULL,
+    slice                TEXT    NOT NULL,
+    book                 TEXT    NOT NULL,
+    event_id             INTEGER NOT NULL REFERENCES events (id),
+    market               TEXT    NOT NULL,
+    side                 TEXT    NOT NULL,
+    status               TEXT    NOT NULL,
+    decimal_price        REAL    NOT NULL,
+    raw_price            TEXT    NOT NULL,
+    raw_format           TEXT    NOT NULL,
+    observed_at          INTEGER NOT NULL,
+    has_source_timestamp INTEGER NOT NULL,
+    received_at          INTEGER NOT NULL,
+    last_confirmed_at    INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS observations_by_price_key
     ON observations (event_id, book, market, side, source, observed_at);
 
+CREATE INDEX IF NOT EXISTS observations_by_source_slice ON observations (source, slice);
+
+CREATE TABLE IF NOT EXISTS quarantined_observations (
+    id             INTEGER PRIMARY KEY,
+    source         TEXT    NOT NULL,
+    slice          TEXT    NOT NULL,
+    reason         TEXT    NOT NULL,
+    raw            TEXT    NOT NULL,
+    quarantined_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS resolved_prices (
     event_id          INTEGER NOT NULL REFERENCES events (id),
     book              TEXT    NOT NULL,
     market            TEXT    NOT NULL,
-    side              TEXT    NOT NULL,
-    decimal_price     REAL    NOT NULL,
-    source            TEXT    NOT NULL,
-    observed_at       INTEGER NOT NULL,
-    last_confirmed_at INTEGER NOT NULL,
-    resolved_at       INTEGER NOT NULL,
+    side               TEXT    NOT NULL,
+    status             TEXT    NOT NULL,
+    decimal_price      REAL    NOT NULL,
+    source             TEXT    NOT NULL,
+    observed_at        INTEGER NOT NULL,
+    last_confirmed_at  INTEGER NOT NULL,
+    confidence_level   TEXT    NOT NULL,
+    confidence_reasons TEXT    NOT NULL,
+    resolved_at        INTEGER NOT NULL,
     PRIMARY KEY (event_id, book, market, side)
 );
 

@@ -83,3 +83,29 @@ func TestQuoteAsOfReturnsLatestQuoteNotAfterTheMoment(t *testing.T) {
 		t.Errorf("quote as of +15s = %v, want -120", got)
 	}
 }
+
+func TestAdminAllowsDashboardToClearScenarios(t *testing.T) {
+	simulator := New(Options{Seed: 1, Now: time.Now, DashboardOrigin: "http://127.0.0.1:8080"})
+	request := httptest.NewRequest(http.MethodOptions, "/scenarios/draftkings-slow", nil)
+	request.Header.Set("Origin", "http://127.0.0.1:8080")
+	recorder := httptest.NewRecorder()
+
+	simulator.AdminHandler().ServeHTTP(recorder, request)
+
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://127.0.0.1:8080" {
+		t.Errorf("preflight allow-origin = %q, want the dashboard origin", recorder.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestAdminDoesNotAllowOtherOrigins(t *testing.T) {
+	simulator := New(Options{Seed: 1, Now: time.Now, DashboardOrigin: "http://127.0.0.1:8080"})
+	request := httptest.NewRequest(http.MethodGet, "/scenarios", nil)
+	request.Header.Set("Origin", "http://evil.example")
+	recorder := httptest.NewRecorder()
+
+	simulator.AdminHandler().ServeHTTP(recorder, request)
+
+	if got := recorder.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("allow-origin for a foreign origin = %q, want none", got)
+	}
+}

@@ -52,6 +52,9 @@ resolver ─ precedence, off the board, main line, confidence
 HTTP API ─ canonical prices + source health
 ```
 
+[normalization.md](normalization.md) walks one real game through these
+steps, showing each provider's payload and the rows it becomes.
+
 The only boundary between a provider and the rest of the system is this
 interface:
 
@@ -71,9 +74,16 @@ canonicalization point branches on which provider sent the data.
 We own event IDs, team identities, and the canonical price view. Providers
 own only their raw observations.
 
-- **Identity (#12).** `teams` plus `team_aliases` map each provider's spelling
-  to one team. `events` plus `event_source_refs` map each provider's event ID
-  to our event, matched on the teams plus start time.
+- **Identity (#12, #67, #68).** Teams and each provider's spelling of them
+  live in data files, `fixtures/teams.csv` and `fixtures/team_aliases.csv`
+  (one alias per row). They're checked and loaded into `teams` and
+  `team_aliases` at startup; a duplicate spelling or an alias for an unknown
+  team stops startup. Adding a provider's names means adding rows.
+  `event_source_refs` maps each provider's event ID to our event. A new one is
+  matched on the **unordered** pair of teams plus a start time within ±30
+  minutes. If a provider lists home and away the other way round, the link is
+  flagged `sides_swapped`, and that provider's home and away are flipped when
+  its prices are ingested.
 - **Prices (#42).** Prices are decimal odds at full precision, and the API also
   shows them as American odds. The provider's raw value and
   its format are kept alongside for audit.
@@ -194,6 +204,10 @@ show `sources_disagree`.
 - Every price carries its status, source, `observed_at`, `last_confirmed_at`,
   freshness against its source's threshold, and confidence with reasons.
 - `/status` shows how many observations each source has had quarantined.
+- A read-only dashboard at `/` (#64) shows all of this live. It's one HTML file
+  embedded with `go:embed`, polling the same endpoints. Its scenario buttons
+  call the simulator's admin API, which allows requests from the dashboard's
+  address (#65).
 
 ## Simulator (#38, #39, #49–51)
 

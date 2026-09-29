@@ -14,19 +14,22 @@ type Options struct {
 	Seed               uint64
 	BackgroundProblems bool
 	Now                func() time.Time
+	DashboardOrigin    string
 }
 
 type Simulator struct {
-	world *world
-	chaos *chaos
-	now   func() time.Time
+	world           *world
+	chaos           *chaos
+	now             func() time.Time
+	dashboardOrigin string
 }
 
 func New(opts Options) *Simulator {
 	return &Simulator{
-		world: newWorld(opts.Seed, opts.Now),
-		chaos: newChaos(opts.Seed, opts.BackgroundProblems, opts.Now),
-		now:   opts.Now,
+		world:           newWorld(opts.Seed, opts.Now),
+		chaos:           newChaos(opts.Seed, opts.BackgroundProblems, opts.Now),
+		now:             opts.Now,
+		dashboardOrigin: opts.DashboardOrigin,
 	}
 }
 

@@ -40,7 +40,11 @@ func completeSnapshot(observations ...canonical.Observation) provider.Snapshot {
 func newSeededSyncer(t *testing.T) *Syncer {
 	t.Helper()
 	testSyncer := newTestSyncer(t)
-	if err := testSyncer.store.SeedTeams(context.Background(), identity.SeedTeams(), identity.SeedAliases()); err != nil {
+	seed, err := identity.LoadDefaultSeed()
+	if err != nil {
+		t.Fatalf("load seed: %v", err)
+	}
+	if err := testSyncer.store.SeedTeams(context.Background(), seed.Teams, seed.Aliases); err != nil {
 		t.Fatalf("seed teams: %v", err)
 	}
 	return testSyncer
@@ -112,5 +116,34 @@ func TestIncompleteSnapshotsNeverInferOffBoard(t *testing.T) {
 
 	if statuses := latestStatusBySide(t, testSyncer); statuses[canonical.SideHome] != canonical.StatusOpen {
 		t.Errorf("home side = %s after a snapshot that doesn't claim completeness, want open", statuses[canonical.SideHome])
+	}
+}
+
+func TestProviderWithHomeAndAwayReversedJoinsTheSameGameWithSidesFlipped(t *testing.T) {
+	ctx := context.Background()
+	testSyncer := newSeededSyncer(t)
+	observedAt := time.Now().Add(-time.Minute)
+	testSyncer.ingest(ctx, aggregatorSlice, completeSnapshot(lakersCelticsMoneyline(canonical.SideHome, -150, observedAt)))
+	reversed := lakersCelticsMoneyline(canonical.SideAway, -150, observedAt)
+	reversed.Source = canonical.SourceDraftKingsDirect
+	reversed.Event = canonical.ProviderEvent{
+		ProviderEventID: "dk-5501",
+		League:          "NBA",
+		HomeTeam:        "BOS Celtics",
+		AwayTeam:        "LA Lakers",
+		StartsAt:        reversed.Event.StartsAt,
+	}
+
+	testSyncer.ingest(ctx, sliceRef{source: canonical.SourceDraftKingsDirect, slice: "dk-5501"}, provider.Snapshot{Observations: []canonical.Observation{reversed}})
+
+	events, _ := testSyncer.store.ListEvents(ctx)
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want the reversed listing to join the existing game", len(events))
+	}
+	latest, _ := testSyncer.store.LatestSourcePrices(ctx)
+	for _, price := range latest {
+		if price.Source == canonical.SourceDraftKingsDirect && price.Key.Side != canonical.SideHome {
+			t.Errorf("draftkings' Lakers price landed on %s, want home (the Lakers are home in our event)", price.Key.Side)
+		}
 	}
 }

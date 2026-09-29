@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS event_source_refs (
     source            TEXT    NOT NULL,
     provider_event_id TEXT    NOT NULL,
     event_id          INTEGER NOT NULL REFERENCES events (id),
+    sides_swapped     INTEGER NOT NULL,
     PRIMARY KEY (source, provider_event_id)
 );
 

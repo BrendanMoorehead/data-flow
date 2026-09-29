@@ -42,22 +42,24 @@ func (s *Store) TeamIDForAlias(ctx context.Context, source canonical.SourceID, a
 	return teamID, scanFound(err), ignoreNoRows(err)
 }
 
-func (s *Store) EventIDForSourceRef(ctx context.Context, source canonical.SourceID, providerEventID string) (canonical.EventID, bool, error) {
-	var eventID canonical.EventID
+func (s *Store) EventLinkForSourceRef(ctx context.Context, source canonical.SourceID, providerEventID string) (canonical.EventLink, bool, error) {
+	var link canonical.EventLink
 	err := s.db.QueryRowContext(ctx,
-		`SELECT event_id FROM event_source_refs WHERE source = ? AND provider_event_id = ?`,
-		source, providerEventID).Scan(&eventID)
-	return eventID, scanFound(err), ignoreNoRows(err)
+		`SELECT event_id, sides_swapped FROM event_source_refs WHERE source = ? AND provider_event_id = ?`,
+		source, providerEventID).Scan(&link.EventID, &link.SidesSwapped)
+	return link, scanFound(err), ignoreNoRows(err)
 }
 
-func (s *Store) FindEventByMatchup(ctx context.Context, matchup canonical.Matchup, startsFrom, startsTo time.Time) (canonical.EventID, bool, error) {
-	var eventID canonical.EventID
+func (s *Store) FindEventByTeams(ctx context.Context, matchup canonical.Matchup, startsFrom, startsTo time.Time) (canonical.EventLink, bool, error) {
+	var link canonical.EventLink
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM events
-		 WHERE home_team_id = ? AND away_team_id = ? AND starts_at BETWEEN ? AND ?
+		`SELECT id, home_team_id != ? FROM events
+		 WHERE ((home_team_id = ? AND away_team_id = ?) OR (home_team_id = ? AND away_team_id = ?))
+		   AND starts_at BETWEEN ? AND ?
 		 ORDER BY starts_at LIMIT 1`,
-		matchup.Home, matchup.Away, toMillis(startsFrom), toMillis(startsTo)).Scan(&eventID)
-	return eventID, scanFound(err), ignoreNoRows(err)
+		matchup.Home, matchup.Home, matchup.Away, matchup.Away, matchup.Home,
+		toMillis(startsFrom), toMillis(startsTo)).Scan(&link.EventID, &link.SidesSwapped)
+	return link, scanFound(err), ignoreNoRows(err)
 }
 
 func (s *Store) CreateEvent(ctx context.Context, matchup canonical.Matchup, league string, startsAt time.Time) (canonical.EventID, error) {
@@ -71,10 +73,10 @@ func (s *Store) CreateEvent(ctx context.Context, matchup canonical.Matchup, leag
 	return canonical.EventID(eventID), err
 }
 
-func (s *Store) LinkSourceRef(ctx context.Context, source canonical.SourceID, providerEventID string, eventID canonical.EventID) error {
+func (s *Store) LinkSourceRef(ctx context.Context, source canonical.SourceID, providerEventID string, link canonical.EventLink) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO event_source_refs (source, provider_event_id, event_id) VALUES (?, ?, ?)`,
-		source, providerEventID, eventID)
+		`INSERT INTO event_source_refs (source, provider_event_id, event_id, sides_swapped) VALUES (?, ?, ?, ?)`,
+		source, providerEventID, link.EventID, link.SidesSwapped)
 	return err
 }
 

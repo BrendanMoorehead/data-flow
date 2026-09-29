@@ -12,17 +12,26 @@ import (
 )
 
 type Server struct {
-	store   *store.Store
-	sources source.Registry
-	now     func() time.Time
+	store       *store.Store
+	sources     source.Registry
+	now         func() time.Time
+	simAdminURL string
 }
 
-func NewServer(store *store.Store, sources source.Registry, now func() time.Time) *Server {
-	return &Server{store: store, sources: sources, now: now}
+type ServerConfig struct {
+	Store       *store.Store
+	Sources     source.Registry
+	Now         func() time.Time
+	SimAdminURL string
+}
+
+func NewServer(config ServerConfig) *Server {
+	return &Server{store: config.Store, sources: config.Sources, now: config.Now, simAdminURL: config.SimAdminURL}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.serveDashboard)
 	mux.HandleFunc("GET /events", s.serveEvents)
 	mux.HandleFunc("GET /events/{eventID}/odds", s.serveEventOdds)
 	mux.HandleFunc("GET /status", s.serveStatus)

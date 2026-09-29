@@ -128,11 +128,20 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
-	if err := db.SeedTeams(ctx, identity.SeedTeams(), identity.SeedAliases()); err != nil {
+	seed, err := identity.LoadDefaultSeed()
+	if err != nil {
+		return fmt.Errorf("load team fixtures: %w", err)
+	}
+	if err := db.SeedTeams(ctx, seed.Teams, seed.Aliases); err != nil {
 		return err
 	}
 
-	simulator := sim.New(sim.Options{Seed: opts.seed, BackgroundProblems: !opts.calm, Now: utcNow})
+	simulator := sim.New(sim.Options{
+		Seed:               opts.seed,
+		BackgroundProblems: !opts.calm,
+		Now:                utcNow,
+		DashboardOrigin:    "http://" + opts.apiAddress,
+	})
 	sources := sourceRegistry()
 	providers := []provider.Provider{
 		aggregator.New("http://"+opts.aggregatorAddr, httpClientFor(sources[canonical.SourceAggregator])),
@@ -142,13 +151,18 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	synchronizer := syncer.New(syncer.Dependencies{
 		Providers: providers,
 		Sources:   sources,
-		Events:    identity.NewResolver(db),
+		Events:    identity.NewResolver(db, logger),
 		Store:     db,
 		Logger:    logger,
 		Now:       utcNow,
 	})
 	rebuilder := resolve.NewRebuilder(db, sources, logger, utcNow)
-	apiServer := api.NewServer(db, sources, utcNow)
+	apiServer := api.NewServer(api.ServerConfig{
+		Store:       db,
+		Sources:     sources,
+		Now:         utcNow,
+		SimAdminURL: "http://" + opts.simAdminAddr,
+	})
 
 	servers := []namedServer{
 		{name: "simulated aggregator", address: opts.aggregatorAddr, handler: simulator.AggregatorHandler()},
@@ -171,6 +185,7 @@ func run(ctx context.Context, opts options, logger *slog.Logger) error {
 	running.start(func() { rebuilder.Run(ctx, resolveInterval) })
 
 	logger.Info("data-flow running",
+		"dashboard", "http://"+opts.apiAddress+"/",
 		"api", "http://"+opts.apiAddress,
 		"sim_admin", "http://"+opts.simAdminAddr,
 		"db", opts.databasePath,

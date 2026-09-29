@@ -23,7 +23,21 @@ func (s *Simulator) AdminHandler() http.Handler {
 	mux.HandleFunc("GET /scenarios", s.serveScenarios)
 	mux.HandleFunc("POST /scenarios/{name}", s.activateScenario)
 	mux.HandleFunc("DELETE /scenarios/{name}", s.clearScenario)
-	return mux
+	return s.allowDashboardOrigin(mux)
+}
+
+func (s *Simulator) allowDashboardOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.dashboardOrigin != "" && r.Header.Get("Origin") == s.dashboardOrigin {
+			w.Header().Set("Access-Control-Allow-Origin", s.dashboardOrigin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Simulator) serveScenarios(w http.ResponseWriter, r *http.Request) {

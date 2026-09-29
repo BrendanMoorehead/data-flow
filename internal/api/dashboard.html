@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>data-flow dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #5b6573; --border: #dde1e6;
+    --good: #1a7f37; --good-bg: #dcf5e3; --warn: #9a6700; --warn-bg: #fff4d1;
+    --bad: #c62828; --bad-bg: #fde2e1; --idle: #57606a; --idle-bg: #eceff2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216; --panel: #171b21; --text: #e6e9ed; --muted: #97a1ad; --border: #2a3039;
+      --good: #4ac26b; --good-bg: #133222; --warn: #e3b341; --warn-bg: #3a2d0d;
+      --bad: #ff7b72; --bad-bg: #3d1614; --idle: #a8b1bb; --idle-bg: #232932;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  header { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px;
+           padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  h1 { margin: 0; font-size: 18px; }
+  h2 { margin: 0 0 4px; font-size: 15px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px 20px 40px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; }
+  .question { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12px; }
+  .pill { display: inline-block; min-width: 64px; text-align: center; padding: 1px 8px; border-radius: 999px;
+          font-size: 12px; font-weight: 600; color: var(--idle); background: var(--idle-bg); }
+  .good { color: var(--good); background: var(--good-bg); }
+  .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .idle { color: var(--idle); background: var(--idle-bg); }
+  .health-row { display: flex; gap: 12px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--border); }
+  .health-row:first-of-type { border-top: none; }
+  .health-name { font-weight: 600; min-width: 150px; }
+  .scenarios { display: flex; flex-wrap: wrap; gap: 8px; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+           background: var(--bg); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.active { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); font-weight: 600; }
+  ol.feed { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow-y: auto; }
+  ol.feed li { display: flex; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); }
+  ol.feed li:first-child { border-top: none; }
+  .feed-time { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 78px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+  th { font-size: 12px; color: var(--muted); font-weight: 500; border-top: none; }
+  tr.game { cursor: pointer; }
+  tr.game:hover td { background: var(--bg); }
+  .cell { display: inline-flex; flex-direction: column; min-width: 150px; padding: 4px 10px; border-radius: 6px; }
+  .cell strong { font-size: 12px; }
+  .cell span { font-variant-numeric: tabular-nums; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+  tr.detail td { background: var(--bg); font-size: 12px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>data-flow <span class="muted small">sportsbook odds sync</span></h1>
+  <span id="connection" class="small muted">connecting…</span>
+</header>
+<main>
+  <section>
+    <h2>Sync health</h2>
+    <p class="question">Is each source keeping up right now?</p>
+    <div id="health"></div>
+  </section>
+
+  <section>
+    <h2>Break something</h2>
+    <p class="question">Each button runs a simulator scenario for 30s. Click an active one to end it early, then watch the sections below react.</p>
+    <div id="scenarios" class="scenarios"></div>
+  </section>
+
+  <section>
+    <h2>What just happened</h2>
+    <p class="question">Changes the sync engine noticed since this page opened. Small price moves are left out.</p>
+    <ol id="feed" class="feed"></ol>
+  </section>
+
+  <section>
+    <h2>Where each price comes from</h2>
+    <p class="question">For each game and book: the source being served and how far to trust it. Click a game for detail.</p>
+    <table id="grid"></table>
+    <div class="legend small">
+      <span><span class="pill good">confirmed</span> a second source agrees</span>
+      <span><span class="pill warn">one source</span> nothing to compare against</span>
+      <span><span class="pill bad">doubtful</span> sources disagree or data is stale</span>
+      <span><span class="pill idle">off board</span> market pulled</span>
+    </div>
+  </section>
+</main>
+<script>
+const simAdminURL = {{.SimAdminURL}};
+const refreshIntervalMs = 1500;
+const scenarioDurationSeconds = 30;
+const maxFeedItems = 40;
+const books = ["draftkings", "fanduel"];
+const bookNames = { draftkings: "DraftKings", fanduel: "FanDuel" };
+
+const pillClassByState = { healthy: "good", retrying: "warn", stale: "warn", failing: "bad", unknown: "idle" };
+const trustByConfidence = {
+  verified: { rank: 3, label: "confirmed", pillClass: "good" },
+  high: { rank: 2, label: "confirmed", pillClass: "good" },
+  medium: { rank: 1, label: "one source", pillClass: "warn" },
+  low: { rank: 0, label: "doubtful", pillClass: "bad" },
+};
+
+const feedItems = [];
+const expandedGames = new Set();
+let previousSnapshot = null;
+
+function element(tag, className, text) {
+  const created = document.createElement(tag);
+  if (className) created.className = className;
+  if (text !== undefined) created.textContent = text;
+  return created;
+}
+
+function pill(text, className) {
+  return element("span", "pill " + className, text);
+}
+
+async function fetchJSON(url, options) {
+  const response = await fetch(url, options);
+  if (!response.ok) throw new Error(url + " returned " + response.status);
+  return response.status === 204 ? null : response.json();
+}
+
+function formatAmerican(price) {
+  return price > 0 ? "+" + price : String(price);
+}
+
+function secondsBetween(earlier, later) {
+  return Math.max(0, Math.round((later - earlier) / 1000));
+}
+
+function clockTime(date) {
+  return date.toLocaleTimeString();
+}
+
+function unhealthySlices(source) {
+  return source.slices.filter(slice => slice.state !== "healthy");
+}
+
+function earliestSuccess(slices) {
+  const successes = slices.map(slice => slice.last_success_at).filter(Boolean).map(time => new Date(time));
+  return successes.length > 0 ? new Date(Math.min(...successes)) : null;
+}
+
+function soonestRetry(slices) {
+  return new Date(Math.min(...slices.map(slice => new Date(slice.next_attempt_at))));
+}
+
+function healthSentence(source) {
+  const now = new Date();
+  const troubled = unhealthySlices(source);
+  const total = source.slices.length;
+  if (troubled.length === 0) return "healthy: all " + total + " slices polled successfully within the last " + source.stale_after_seconds + "s";
+  const lastGood = earliestSuccess(troubled);
+  const downFor = lastGood ? secondsBetween(lastGood, now) + "s since the last success" : "no success yet";
+  return troubled.length + " of " + total + " slices " + source.state + " (" + downFor + "), next retry " + clockTime(soonestRetry(troubled));
+}
+
+function healthRow(source) {
+  const row = element("div", "health-row");
+  row.append(pill(source.state, pillClassByState[source.state]), element("span", "health-name", source.source));
+  row.append(element("span", "", healthSentence(source)));
+  if (source.quarantined_observations > 0) {
+    row.append(element("span", "small muted", "· " + source.quarantined_observations + " bad records quarantined"));
+  }
+  return row;
+}
+
+function renderHealth(status) {
+  document.getElementById("health").replaceChildren(...status.sources.map(healthRow));
+}
+
+const scenarioButtons = new Map();
+const scenarioStates = new Map();
+
+async function toggleScenario(name) {
+  const url = simAdminURL + "/scenarios/" + name;
+  if (scenarioStates.get(name).active) await fetchJSON(url, { method: "DELETE" });
+  else await fetchJSON(url + "?for=" + scenarioDurationSeconds + "s", { method: "POST" });
+  refresh();
+}
+
+function scenarioButton(name) {
+  if (!scenarioButtons.has(name)) {
+    const button = element("button");
+    button.addEventListener("click", () => toggleScenario(name));
+    scenarioButtons.set(name, button);
+  }
+  return scenarioButtons.get(name);
+}
+
+function updateScenarioButton(scenario) {
+  scenarioStates.set(scenario.name, scenario);
+  const button = scenarioButton(scenario.name);
+  const secondsLeft = scenario.active ? secondsBetween(new Date(), new Date(scenario.active_until)) : 0;
+  button.className = scenario.active ? "active" : "";
+  button.textContent = scenario.active ? scenario.name + " · " + secondsLeft + "s" : scenario.name;
+  button.title = scenario.description;
+  return button;
+}
+
+function renderScenarios(scenarios) {
+  const container = document.getElementById("scenarios");
+  if (!scenarios) {
+    container.replaceChildren(element("span", "muted", "Simulator admin API unreachable at " + simAdminURL));
+    return;
+  }
+  const buttons = scenarios.scenarios.map(updateScenarioButton);
+  if (buttons.some((button, index) => container.children[index] !== button)) container.replaceChildren(...buttons);
+}
+
+function pricesForBook(odds, book) {
+  return odds.prices.filter(price => price.book === book);
+}
+
+function cellSummary(prices) {
+  if (prices.length === 0) return null;
+  const sources = [...new Set(prices.map(price => price.source))];
+  const weakest = prices.reduce((worst, price) => trustByConfidence[price.confidence.level].rank < trustByConfidence[worst.confidence.level].rank ? price : worst);
+  const anyStale = prices.some(price => price.freshness.is_stale);
+  return {
+    source: sources.join(" + "),
+    offBoard: prices.some(price => price.status === "off_board"),
+    trust: anyStale ? trustByConfidence.low : trustByConfidence[weakest.confidence.level],
+  };
+}
+
+function priceLine(prices) {
+  const byTeam = side => prices.find(price => price.side === side);
+  return ["away", "home"].map(side => byTeam(side)).filter(Boolean).map(price => formatAmerican(price.price_american)).join(" / ");
+}
+
+function bookCell(event, prices) {
+  const cell = element("td");
+  const summary = cellSummary(prices);
+  if (!summary) {
+    cell.append(element("span", "muted", "no price yet"));
+    return cell;
+  }
+  const trustClass = summary.offBoard ? "idle" : summary.trust.pillClass;
+  const box = element("div", "cell " + trustClass);
+  box.append(element("strong", "", summary.offBoard ? "off board · " + summary.source : summary.source));
+  box.append(element("span", "", priceLine(prices) + "  ·  " + (summary.offBoard ? "last known" : summary.trust.label)));
+  cell.append(box);
+  return cell;
+}
+
+function detailRow(event, odds) {
+  const row = element("tr", "detail");
+  const cell = element("td");
+  cell.colSpan = 1 + books.length;
+  for (const price of odds.prices) {
+    const team = price.side === "home" ? event.home_team : event.away_team;
+    const line = bookNames[price.book] + " · " + team + " " + formatAmerican(price.price_american) + " (" + price.price_decimal.toFixed(3) + ") · " +
+      price.status + " · " + price.source + " · " + price.confidence.level + ": " + price.confidence.reasons.join(", ") +
+      " · confirmed " + price.freshness.age_seconds.toFixed(1) + "s ago" + (price.freshness.is_stale ? " (stale)" : "");
+    cell.append(element("div", "mono", line));
+  }
+  row.append(cell);
+  return row;
+}
+
+function gameRows(event, odds) {
+  const row = element("tr", "game");
+  const game = element("td");
+  game.append(element("div", "", event.away_team + " @ " + event.home_team), element("div", "small muted", new Date(event.starts_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })));
+  row.append(game, ...books.map(book => bookCell(event, pricesForBook(odds, book))));
+  row.addEventListener("click", () => toggleGame(event.id));
+  return expandedGames.has(event.id) ? [row, detailRow(event, odds)] : [row];
+}
+
+function toggleGame(eventID) {
+  if (expandedGames.has(eventID)) expandedGames.delete(eventID);
+  else expandedGames.add(eventID);
+  refresh();
+}
+
+function renderGrid(events, oddsByEvent) {
+  const header = element("tr");
+  header.append(element("th", "", "Game (away @ home)"), ...books.map(book => element("th", "", bookNames[book] + " (away / home)")));
+  const rows = events.flatMap((event, index) => gameRows(event, oddsByEvent[index]));
+  document.getElementById("grid").replaceChildren(header, ...rows);
+}
+
+const noteworthyStates = new Set(["failing", "stale"]);
+
+function snapshotOf(status, scenarios, events, oddsByEvent) {
+  const snapshot = { sourceStates: {}, activeScenarios: new Set(), markets: {} };
+  status.sources.forEach(source => { snapshot.sourceStates[source.source] = source.state; });
+  (scenarios ? scenarios.scenarios : []).filter(scenario => scenario.active).forEach(scenario => snapshot.activeScenarios.add(scenario.name));
+  events.forEach((event, index) => {
+    for (const book of books) {
+      const prices = pricesForBook(oddsByEvent[index], book);
+      if (prices.length === 0) continue;
+      snapshot.markets[event.id + "|" + book] = marketState(event, book, prices);
+    }
+  });
+  return snapshot;
+}
+
+function marketState(event, book, prices) {
+  const summary = cellSummary(prices);
+  const sideStatuses = {};
+  prices.forEach(price => { sideStatuses[price.side === "home" ? event.home_team : event.away_team] = price.status; });
+  return { label: event.away_team + " @ " + event.home_team + " · " + bookNames[book], source: summary.source, offBoard: summary.offBoard, sideStatuses };
+}
+
+function sourceStateChanges(before, after) {
+  return Object.entries(after.sourceStates)
+    .filter(([source, state]) => {
+      const previous = before.sourceStates[source];
+      return previous && previous !== state && (noteworthyStates.has(previous) || noteworthyStates.has(state));
+    })
+    .map(([source, state]) => source + (noteworthyStates.has(state) ? " is " + state : " recovered: " + state) + " (was " + before.sourceStates[source] + ")");
+}
+
+function scenarioChanges(before, after) {
+  const started = [...after.activeScenarios].filter(name => !before.activeScenarios.has(name)).map(name => "scenario " + name + " started");
+  const ended = [...before.activeScenarios].filter(name => !after.activeScenarios.has(name)).map(name => "scenario " + name + " ended");
+  return started.concat(ended);
+}
+
+function marketChanges(previous, current) {
+  const changedSides = Object.entries(current.sideStatuses).filter(([team, status]) => previous.sideStatuses[team] && previous.sideStatuses[team] !== status);
+  if (changedSides.length === 0) {
+    const sourceMoved = previous.source !== current.source && !previous.offBoard && !current.offBoard;
+    return sourceMoved ? [current.label + " now served from " + current.source + " (was " + previous.source + ")"] : [];
+  }
+  const wholeMarket = changedSides.length === Object.keys(current.sideStatuses).length;
+  const describe = status => status === "off_board" ? "went off the board" : "is back on the board";
+  if (wholeMarket && new Set(changedSides.map(([, status]) => status)).size === 1) {
+    return [current.label + " moneyline " + describe(changedSides[0][1])];
+  }
+  return changedSides.map(([team, status]) => current.label + " · " + team + " " + describe(status));
+}
+
+function changesBetween(before, after) {
+  const market = Object.entries(after.markets).flatMap(([key, current]) => before.markets[key] ? marketChanges(before.markets[key], current) : []);
+  return sourceStateChanges(before, after).concat(scenarioChanges(before, after), market);
+}
+
+function recordChanges(snapshot) {
+  if (previousSnapshot) {
+    const now = new Date();
+    changesBetween(previousSnapshot, snapshot).forEach(text => feedItems.unshift({ time: now, text }));
+    feedItems.splice(maxFeedItems);
+  }
+  previousSnapshot = snapshot;
+}
+
+function renderFeed() {
+  const feed = document.getElementById("feed");
+  if (feedItems.length === 0) {
+    feed.replaceChildren(element("li", "muted", "Nothing yet. Markets go off the board on their own every so often, or press a button above."));
+    return;
+  }
+  feed.replaceChildren(...feedItems.map(item => {
+    const entry = element("li");
+    entry.append(element("span", "feed-time", clockTime(item.time)), element("span", "", item.text));
+    return entry;
+  }));
+}
+
+function setConnection(isConnected, detail) {
+  const connection = document.getElementById("connection");
+  connection.className = isConnected ? "small muted" : "small pill bad";
+  connection.textContent = isConnected ? "live · updated " + clockTime(new Date()) : "API unreachable: " + detail;
+}
+
+async function refresh() {
+  try {
+    const [status, eventList] = await Promise.all([fetchJSON("/status"), fetchJSON("/events")]);
+    const oddsByEvent = await Promise.all(eventList.events.map(event => fetchJSON("/events/" + event.id + "/odds")));
+    const scenarios = await fetchJSON(simAdminURL + "/scenarios").catch(() => null);
+    recordChanges(snapshotOf(status, scenarios, eventList.events, oddsByEvent));
+    renderHealth(status);
+    renderScenarios(scenarios);
+    renderFeed();
+    renderGrid(eventList.events, oddsByEvent);
+    setConnection(true);
+  } catch (error) {
+    setConnection(false, error.message);
+  }
+}
+
+refresh();
+setInterval(refresh, refreshIntervalMs);
+</script>
+</body>
+</html>

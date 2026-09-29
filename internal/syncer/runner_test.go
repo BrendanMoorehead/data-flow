@@ -55,10 +55,11 @@ func newTestSyncer(t *testing.T) *Syncer {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { testStore.Close() })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return New(Dependencies{
 		Store:  testStore,
-		Events: identity.NewResolver(testStore),
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Events: identity.NewResolver(testStore, logger),
+		Logger: logger,
 		Now:    time.Now,
 	})
 }

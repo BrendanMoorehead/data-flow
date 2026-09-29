@@ -1,0 +1,37 @@
+team_id,source,alias
+nba-lal,aggregator,Los Angeles Lakers
+nba-lal,draftkings_direct,LA Lakers
+nba-lal,fanduel_direct,Lakers
+nba-bos,aggregator,Boston Celtics
+nba-bos,draftkings_direct,BOS Celtics
+nba-bos,fanduel_direct,Celtics
+nba-gsw,aggregator,Golden State Warriors
+nba-gsw,draftkings_direct,GS Warriors
+nba-gsw,fanduel_direct,Warriors
+nba-den,aggregator,Denver Nuggets
+nba-den,draftkings_direct,DEN Nuggets
+nba-den,fanduel_direct,Nuggets
+nba-mil,aggregator,Milwaukee Bucks
+nba-mil,draftkings_direct,MIL Bucks
+nba-mil,fanduel_direct,Bucks
+nba-phi,aggregator,Philadelphia 76ers
+nba-phi,draftkings_direct,PHI 76ers
+nba-phi,fanduel_direct,76ers
+nba-nyk,aggregator,New York Knicks
+nba-nyk,draftkings_direct,NY Knicks
+nba-nyk,fanduel_direct,Knicks
+nba-mia,aggregator,Miami Heat
+nba-mia,draftkings_direct,MIA Heat
+nba-mia,fanduel_direct,Heat
+nba-dal,aggregator,Dallas Mavericks
+nba-dal,draftkings_direct,DAL Mavericks
+nba-dal,fanduel_direct,Mavericks
+nba-phx,aggregator,Phoenix Suns
+nba-phx,draftkings_direct,PHO Suns
+nba-phx,fanduel_direct,Suns
+nba-okc,aggregator,Oklahoma City Thunder
+nba-okc,draftkings_direct,OKC Thunder
+nba-okc,fanduel_direct,Thunder
+nba-min,aggregator,Minnesota Timberwolves
+nba-min,draftkings_direct,MIN Timberwolves
+nba-min,fanduel_direct,Timberwolves

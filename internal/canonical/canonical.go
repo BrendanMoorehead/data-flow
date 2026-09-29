@@ -32,6 +32,13 @@ const (
 	SideAway Side = "away"
 )
 
+func (s Side) Opposite() Side {
+	if s == SideHome {
+		return SideAway
+	}
+	return SideHome
+}
+
 type MarketStatus string
 
 const (
@@ -91,6 +98,13 @@ type TeamAlias struct {
 type Matchup struct {
 	Home TeamID
 	Away TeamID
+}
+
+// EventLink ties a provider's event to ours. SidesSwapped means the provider lists the
+// teams the other way round, so its home side is our away side.
+type EventLink struct {
+	EventID      EventID
+	SidesSwapped bool
 }
 
 type Event struct {

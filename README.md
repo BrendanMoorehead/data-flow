@@ -3,9 +3,14 @@
 Sportsbook odds sync engine (Pikkit BE-01 take-home).
 
 Simulated sportsbook feeds with different schemas are synced into one
-canonical odds view. The system overview and failure semantics are in
-[docs/design.md](docs/design.md). The reasoning behind each choice is in
-[docs/decisions.md](docs/decisions.md).
+canonical odds view.
+
+- [docs/normalization.md](docs/normalization.md) follows one game from all
+  three provider schemas into our schema, using real captured data.
+- [docs/design.md](docs/design.md) covers the system overview and failure
+  semantics.
+- [docs/decisions.md](docs/decisions.md) records the reasoning behind each
+  choice.
 
 ## Run it
 
@@ -34,6 +39,7 @@ that, one process starts everything:
 
 | What | Address |
 |---|---|
+| **Dashboard** | **`http://127.0.0.1:8080/`** |
 | Read API | `http://127.0.0.1:8080` |
 | Simulator scenario admin | `http://127.0.0.1:9100` |
 | Simulated aggregator | `http://127.0.0.1:9101` |
@@ -47,8 +53,19 @@ background problems, which is expected. Press **Ctrl+C** to stop.
 
 ### 3. Try it
 
-With it running, open a second terminal and use the calls in
-[Example calls](#example-calls) below.
+Open **http://127.0.0.1:8080/** in a browser. The dashboard refreshes every
+1.5s and shows:
+
+- each source's health, including retrying and failing slices and their next attempt
+- scenario buttons that break things for 30s (click an active one to end it early)
+- every price with its status, source, confidence, and age
+
+For example, click **draftkings-outage** and watch `draftkings_direct` go
+`failing` while DraftKings prices switch to the aggregator.
+
+The dashboard is one static HTML file embedded in the binary. It only reads
+the API below, so everything it shows is also available with `curl`: see
+[Example calls](#example-calls).
 
 ### Options
 
@@ -86,6 +103,26 @@ go test -race ./...   # also checks for concurrency bugs
   port. Stop it, or move ours with the flags above, e.g. `-addr 127.0.0.1:8081`.
 - **`apply schema` or `no such column` errors on start**: the database was
   created by an older version. Delete it (see [Start fresh](#start-fresh)).
+
+## How to verify
+
+Each row is one behavior the brief asks about, the test that proves it, and
+what to look for while it runs. Run one row's tests with
+`go test ./... -run '<names>' -v`.
+
+| Claim | Proven by | See it live |
+|---|---|---|
+| Three different schemas merge into one event per game | `TestProvidersWithDifferentIdentifiersMergeIntoOneEventPerGame`, `TestProviderWithHomeAndAwayReversedJoinsTheSameGameWithSidesFlipped` | The dashboard lists 6 games, each priced for DraftKings and FanDuel, although the providers spell teams differently (`Los Angeles Lakers` / `LA Lakers` / `Lakers`) and use different IDs |
+| Seeing the same data twice changes nothing | `TestRecordObservationTwiceStoresOnceAndMovesConfirmation`, `TestRepeatedPollsDoNotDuplicateObservations` | Log lines show `inserted=0 confirmed=2` on repeat polls: stored once, only freshness moves |
+| An older update never replaces a newer one | `TestLatestSourcePricesIgnoresOutOfOrderObservation` | Runs by default (DraftKings re-sends an old quote about 5% of the time). It's covered by the test, because nothing visibly changes when it works |
+| Direct feed wins while fresh, then falls back to the aggregator | `TestSelectPreferredChoosesFreshDirectOverFreshAggregator`, `TestSelectPreferredFallsBackToAggregatorWhenDirectIsStale` | Click **draftkings-outage**. Within ~12s, "What just happened" shows DraftKings prices switching to the aggregator, then back when it ends |
+| A slow provider doesn't hold up the others | `TestHangingSliceDoesNotStopOtherSlicesFromPolling` | Click **draftkings-slow**. DraftKings goes `retrying` while FanDuel and the aggregator stay `healthy` |
+| Retries back off with jitter, never in a tight loop | `TestDelayDoublesWithEachConsecutiveFailure`, `TestDelayNeverExceedsCeiling`, `TestFinishAfterFailureDelaysAndCountsFailures` | During an outage, the next-retry times in "Sync health" move further out |
+| Rate limits pause the whole provider | `TestRateLimitedResponsePausesTheWholeBudget`, `TestAggregatorRateLimitAllowsOneRequestThenSendsRetryAfter` | Click **aggregator-rate-limit**. Only a couple of `429` lines appear in the logs, not one per request |
+| Bad or incomplete records are quarantined, not stored | `TestRunnerWithoutPriceIsRejected`, `TestCheckMarginsRejectsBothSidesOfAnImpossibleMarket` | FanDuel's quarantine count in "Sync health" rises (about 3% of its prices arrive without one) |
+| Off the board is inferred safely and reverses | `TestMarketMissingFromCompleteSnapshotGoesOffTheBoard`, `TestIncompleteSnapshotsNeverInferOffBoard`, `TestStillMissingMarketIsConfirmedNotReinferred`, `TestNewerOpenObservationPutsMarketBackOnTheBoard` | "What just happened" shows markets going off the board and coming back as the simulator suspends them |
+| Confidence says how trustworthy each price is | `TestConfidenceIs*`, `TestMissingSourceTimestampCapsConfidenceAtMedium` | DraftKings is mostly green (confirmed by the aggregator). FanDuel stays yellow because its feed has no timestamps |
+| Health is visible at a glance | `TestSliceStateEscalatesWithConsecutiveFailures`, `TestCatalogIsJudgedAgainstItsRefreshInterval` | "Sync health" at the top of the dashboard, or `curl -s localhost:8080/status` |
 
 ## Example calls
 

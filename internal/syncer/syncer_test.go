@@ -54,11 +54,8 @@ func newPipeline(t *testing.T) pipeline {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { testStore.Close() })
-	if err := testStore.SeedTeams(ctx, identity.SeedTeams(), identity.SeedAliases()); err != nil {
-		t.Fatalf("seed teams: %v", err)
-	}
-
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	seedDefaultTeams(t, testStore)
 	providers := []provider.Provider{
 		aggregator.New(aggregatorServer.URL, http.DefaultClient),
 		draftkings.New(draftKingsServer.URL, http.DefaultClient),
@@ -69,7 +66,7 @@ func newPipeline(t *testing.T) pipeline {
 		syncer: syncer.New(syncer.Dependencies{
 			Providers: providers,
 			Sources:   testSources,
-			Events:    identity.NewResolver(testStore),
+			Events:    identity.NewResolver(testStore, logger),
 			Store:     testStore,
 			Logger:    logger,
 			Now:       time.Now,
@@ -137,5 +134,16 @@ func TestRepeatedPollsDoNotDuplicateObservations(t *testing.T) {
 
 	if len(firstPass) != len(secondPass) {
 		t.Errorf("latest prices went from %d to %d after an identical poll", len(firstPass), len(secondPass))
+	}
+}
+
+func seedDefaultTeams(t *testing.T, testStore *store.Store) {
+	t.Helper()
+	seed, err := identity.LoadDefaultSeed()
+	if err != nil {
+		t.Fatalf("load seed: %v", err)
+	}
+	if err := testStore.SeedTeams(context.Background(), seed.Teams, seed.Aliases); err != nil {
+		t.Fatalf("seed teams: %v", err)
 	}
 }

@@ -54,7 +54,7 @@ func (s *Syncer) recordAccepted(ctx context.Context, ref sliceRef, observations 
 	seen := make(map[canonical.PriceKey]bool, len(observations))
 	for _, observation := range observations {
 		observation = withObservedAtFallback(observation, receivedAt)
-		eventID, err := s.events.ResolveEvent(ctx, observation.Source, observation.Event)
+		link, err := s.events.ResolveEvent(ctx, observation.Source, observation.Event)
 		if errors.Is(err, identity.ErrUnknownTeam) {
 			rejection := provider.NewRejection(observation.Event, "%v", err)
 			if err := s.quarantineAll(ctx, ref, []provider.Rejection{rejection}, receivedAt, counts); err != nil {
@@ -65,14 +65,15 @@ func (s *Syncer) recordAccepted(ctx context.Context, ref sliceRef, observations 
 		if err != nil {
 			return seen, err
 		}
+		observation = orientedTo(link, observation)
 		result, err := s.store.RecordObservation(ctx, store.ObservationRecord{
-			EventID: eventID, Slice: ref.slice, Observation: observation, ReceivedAt: receivedAt,
+			EventID: link.EventID, Slice: ref.slice, Observation: observation, ReceivedAt: receivedAt,
 		})
 		if err != nil {
 			return seen, err
 		}
 		counts.add(result)
-		seen[observation.KeyFor(eventID)] = true
+		seen[observation.KeyFor(link.EventID)] = true
 	}
 	return seen, nil
 }
@@ -118,6 +119,13 @@ func (s *Syncer) quarantineAll(ctx context.Context, ref sliceRef, rejections []p
 		counts.quarantined++
 	}
 	return nil
+}
+
+func orientedTo(link canonical.EventLink, observation canonical.Observation) canonical.Observation {
+	if link.SidesSwapped {
+		observation.Side = observation.Side.Opposite()
+	}
+	return observation
 }
 
 func withObservedAtFallback(observation canonical.Observation, receivedAt time.Time) canonical.Observation {

@@ -142,3 +142,11 @@ func TestSimultaneousObservationsFavorOffBoard(t *testing.T) {
 		t.Errorf("status on a timestamp tie = %s, want off_board", resolved.Status)
 	}
 }
+
+func TestExactSourcesMustMatchExactlyToBeVerified(t *testing.T) {
+	resolved := resolveOrFail(t, open(directConfig, odds.American(-300).Decimal()), open(fanDuelDirectConfig, odds.American(-302).Decimal()))
+
+	if resolved.Confidence.Level == canonical.ConfidenceVerified {
+		t.Error("-300 and -302 from two exact sources were verified; they only share a 2-decimal rounding (1.33)")
+	}
+}

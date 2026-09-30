@@ -2,15 +2,13 @@ package resolve
 
 import (
 	"math"
+	"slices"
 
 	"github.com/BrendanMoorehead/data-flow/internal/canonical"
 	"github.com/BrendanMoorehead/data-flow/internal/source"
 )
 
-const (
-	agreementTolerance     = 0.015
-	matchPrecisionDecimals = 2
-)
+const agreementTolerance = 0.015
 
 var rankByLevel = map[canonical.ConfidenceLevel]int{
 	canonical.ConfidenceLow:      0,
@@ -90,7 +88,24 @@ func directReasons(inputs confidenceInputs) []canonical.ConfidenceReason {
 }
 
 func pricesMatch(a, b Candidate) bool {
-	return roundToDecimals(float64(a.Price), matchPrecisionDecimals) == roundToDecimals(float64(b.Price), matchPrecisionDecimals)
+	decimals, bothExact := coarserPrecision(a.Config, b.Config)
+	if bothExact {
+		return a.Price == b.Price
+	}
+	return roundToDecimals(float64(a.Price), decimals) == roundToDecimals(float64(b.Price), decimals)
+}
+
+func coarserPrecision(a, b source.Config) (decimals int, bothExact bool) {
+	rounded := []int{}
+	for _, config := range []source.Config{a, b} {
+		if config.PriceDecimals > 0 {
+			rounded = append(rounded, config.PriceDecimals)
+		}
+	}
+	if len(rounded) == 0 {
+		return 0, true
+	}
+	return slices.Min(rounded), false
 }
 
 func pricesAgree(a, b Candidate) bool {

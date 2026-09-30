@@ -110,6 +110,7 @@ func sourceRegistry() source.Registry {
 			Workers:                1,
 			RequestsPerSecond:      2,
 			RequestBurst:           2,
+			PriceDecimals:          2,
 		},
 	)
 }

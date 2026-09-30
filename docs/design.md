@@ -24,36 +24,43 @@ for example by league page or by game (#35).
 ## Lifecycle of a record
 
 ```
-simulator (local HTTP mock servers, one per provider)       #37
+simulator (local HTTP mock servers, one per provider)          #37
   │
   ▼
-poller: each slice polled on its own schedule and backoff   #36
-  │     shared request budget per provider
+poller: worker pool per provider, backoff per slice           #36, #43
+  │     one request budget per provider
   ▼
-adapter.Poll(slice) ─ fetches and parses the provider schema
+adapter.Poll(slice) ─ fetch + parse this provider's schema
   │
   ▼
-adapter maps to []Observation ◀── canonicalization point: data becomes ours here
-  │     (canonical units: American odds, our book/market/side enums)
+[] Observation ◀── step 1, OUR UNITS: decimal odds, our book / market /
+  │                side / status labels. The event is still described in
+  │                the provider's terms (its ID, its team spellings).
   ▼
-identity ─ provider team names + event ID → our event ID     #12
-  │        unknown team alias → observation rejected
-  ▼
-sanity checks ─ failures go to quarantined_observations     #20
+sanity checks ─ fails → quarantined_observations               #54, #55
   │
   ▼
-store: new content is appended to observations (dedupe key)
-       unchanged content only moves last_confirmed_at       #34
+identity ◀────── step 2, OUR IDENTITY: team aliases + start time
+  │               → our event ID. Unknown team → quarantined.  #67, #68
+  ▼
+observations ─ new content appended (content key)
+  │            repeated content only moves last_confirmed_at   #34
+  ▼
+resolver ─ precedence, off the board, confidence → resolved_prices
   │
   ▼
-resolver ─ precedence, off the board, main line, confidence
-  │        writes resolved_prices
-  ▼
-HTTP API ─ canonical prices + source health
+HTTP API and dashboard
 ```
 
 [normalization.md](normalization.md) walks one real game through these
 steps, showing each provider's payload and the rows it becomes.
+
+Data becomes ours in **two named steps**. The adapter translates units, and
+the identity step assigns our event. They're separate because identity needs
+shared state (the alias table and existing event links), while adapters stay
+pure parsing code that needs no database. Sanity checks run **between** them
+on purpose: identity can *create* events and links, so bad data is
+quarantined before anything permanent is written.
 
 The only boundary between a provider and the rest of the system is this
 interface:
@@ -66,8 +73,12 @@ type Provider interface {
 }
 ```
 
-Nothing outside an adapter knows about a provider's schema. Nothing after the
-canonicalization point branches on which provider sent the data.
+Nothing outside an adapter knows about a provider's schema. Shared code
+never branches on a provider's name. It only reacts to what the data
+declares: a source's role (`direct` or `aggregator`), whether missing
+markets mean off the board (`MissingMeansOffBoard`), whether it sent a
+timestamp (`HasSourceTimestamp`), and how precisely it rounds prices
+(`PriceDecimals`).
 
 ## Canonical model and data ownership
 
@@ -87,9 +98,9 @@ own only their raw observations.
 - **Prices (#42).** Prices are decimal odds at full precision, and the API also
   shows them as American odds. The provider's raw value and
   its format are kept alongside for audit.
-- **Lines (#29).** Lines are stored as written, e.g. `-3.5`, and parsed
-  directly from the provider's value.
-- **Markets (#10).** Moneyline, spread, and total, including alternate lines.
+- **Markets.** Moneyline only. Spreads, totals, and alternate lines were
+  designed but not built, in favor of failure handling. Adding them means putting the line in `PriceKey` and working out
+  each game's main line in the resolver.
 
 | Table | Role |
 |---|---|
@@ -140,17 +151,13 @@ is expected to lag.
 - A market that is off the board still carries its **last known price**. The
   `status` field is the main indicator.
 
-**Main line (#18).** We work out the main line ourselves: the line whose sides
-are closest to a 50/50 implied probability. A provider's main-line flag is one
-input, not the answer.
-
 **Confidence (#26, #27, #60–62).** Every price has a level plus the reasons
 behind it. The served price is compared with the best other fresh source for
 the same book, market, and side:
 
 | Level | When |
 |---|---|
-| `verified` | The two sources match exactly, compared at 2 decimals, the aggregator's precision |
+| `verified` | The two sources match exactly, compared at the coarser source's precision (`PriceDecimals`: 2 for the aggregator; exact for sources sending American odds) |
 | `high` | Their implied probabilities are within 1.5 percentage points |
 | `medium` | Only one fresh source, or the served source has no timestamps (capped) |
 | `low` | The sources disagree, or every source is stale |
@@ -199,7 +206,7 @@ show `sources_disagree`.
     price staleness threshold.
 - Structured logs (`log/slog`) record one line per poll. Each line has the
   source, slice, and duration, plus counts of observations inserted, only
-  confirmed, and rejected. A failure's line includes the error and the next
+  confirmed, inferred off the board, and quarantined. A failure's line includes the error and the next
   attempt time.
 - Every price carries its status, source, `observed_at`, `last_confirmed_at`,
   freshness against its source's threshold, and confidence with reasons.
@@ -233,17 +240,24 @@ and an admin server on its own port.
 | `aggregator-rate-limit` | One request per 5s is allowed; the rest get 429 with `Retry-After` |
 | `aggregator-lag` | The aggregator serves prices from 20s ago |
 
-## Proposed layout
+## Layout
 
 ```
-cmd/dataflow/          main: starts the simulator, sync engine, and API
-internal/canonical/    canonical types and odds/line conversion
-internal/provider/     Provider interface
-  aggregator/  draftkings/  fanduel/
-internal/sanity/       observation sanity checks
-internal/store/        SQLite (modernc.org/sqlite, pure Go, so no C compiler is needed)
-internal/syncer/       slice scheduler, backoff, shared rate limiting
-internal/resolve/      precedence, off the board, main line, confidence
-internal/api/          HTTP read API and /status
-internal/sim/          mock provider servers, scenarios, admin endpoint
+cmd/dataflow/          main: wires the simulator, sync engine, and API into one process
+fixtures/              teams.csv and team_aliases.csv, embedded into the binary
+internal/canonical/    our data model: observations, keys, statuses, confidence
+internal/odds/         American and decimal odds conversion
+internal/source/       per-source config: role, intervals, timeouts, budget, precision
+internal/provider/     the Provider interface and shared snapshot/HTTP helpers
+  aggregator/  draftkings/  fanduel/     one adapter per provider schema
+internal/sanity/       margin checks before anything is stored
+internal/identity/     team aliases and event matching (loads fixtures/)
+internal/store/        SQLite (modernc.org/sqlite, pure Go, no C compiler needed)
+internal/syncer/       worker pools, slice schedule, catalog refresh, ingest
+internal/backoff/      exponential backoff with jitter
+internal/ratelimit/    token-bucket budget per provider, honoring Retry-After
+internal/resolve/      precedence, off the board, confidence → resolved_prices
+internal/api/          read API, /status, embedded dashboard
+internal/httpserve/    JSON response helpers
+internal/sim/          mock providers, background problems, scenarios, admin API
 ```

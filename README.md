@@ -164,14 +164,72 @@ curl -s -X DELETE localhost:9100/scenarios/draftkings-outage
 The other scenarios are `draftkings-slow`, `aggregator-rate-limit`, and
 `aggregator-lag`.
 
+## At higher scale: what I'd change first
+
+In order, starting with what would break first:
+
+1. **Rebuild resolved prices incrementally.** The resolver currently rebuilds
+   every price from the full `observations` history once a second. That's
+   fine for a demo (about 16k rows an hour) but grows without limit. I'd
+   resolve only the price keys an ingest actually touched, re-check freshness
+   on a timer, and move old history to cold storage.
+2. **Split polling from serving, and coordinate pollers.** Everything runs in
+   one process with an in-memory schedule. At scale, poller workers would
+   take **leases** on slices so two instances never poll the same one. The
+   per-provider request budget would move to a shared store (for example a
+   Redis token bucket), because a rate limit belongs to the account, not to
+   one process.
+3. **Move to Postgres.** SQLite has a single writer. I'd partition
+   `observations` by time and serve the API from a read replica.
+4. **Accept push feeds.** Many real feeds stream. Only the scheduler assumes
+   polling; the ingest pipeline takes snapshots however they arrive, so a
+   streaming adapter would call it directly.
+5. **Turn identity into an operated workflow.** Team aliases are a reviewed CSV
+   today. At scale, unmatched names would go to a review queue with suggested
+   matches, and markets would need identity too (spread and total lines,
+   player props).
+6. **Metrics and alerts, not just logs and `/status`.** Poll latency,
+   failure rate, and staleness per source, with alerts on `failing` and
+   `stale`.
+
 ## AI & Tools
 
-### Why `.claude/skills/` is committed
+**Tools used**
+- **Claude Code** (Anthropic's Claude, in VS Code) for design discussion,
+  implementation, tests, and documentation.
+- **gstack's headless browser**, driven through Claude Code, to check that the
+  dashboard renders, has no console errors, and that its scenario buttons
+  actually trigger failover.
+- The standard Go tools (`gofmt`, `go vet`, `go test -race`) and the GitHub CLI.
 
-This repo includes the Claude Code skills I used while building it. They are
-part of the submission on purpose:
+**How I kept the decisions mine.** Two Claude Code skills are committed in
+`.claude/skills/` so the setup is visible:
+- `clean-code` holds my coding standards.
+- `decision-checkpoints` makes the assistant stop at every design choice,
+  present options and a recommendation, and wait for my call.
 
-- **They show how I steered the AI.** A skill holds the rules I made the
-  assistant follow for this codebase, such as how a provider adapter must be
-  shaped and where canonicalization happens. Reading them shows which decisions
-  I made and which work I delegated.
+I logged every call along with what the AI proposed: 71 decisions, of which
+**20 changed, rejected, or reworked the AI's proposal**.
+[docs/decisions.md](docs/decisions.md) keeps the ones that shaped the system.
+
+**Where I materially changed the AI's output**
+- **I rejected its polling design (#33).** It proposed polling the direct feeds
+  for "changes since my last timestamp." Sportsbooks generally don't offer
+  that; scraping a book is a full poll. I changed it to full refreshes, split
+  into small per-game or per-league slices so a failure only affects its own
+  slice. That decision shaped the syncer: worker pools, per-slice backoff,
+  and "missing means off the board only after a complete fetch."
+- **I redesigned the provider model (#11, #14).** It framed each book as having
+  one source. I made each book reported by both a direct feed and the
+  aggregator, which creates the real conflicts the confidence and
+  precedence rules exist to handle.
+- **I rejected its first dashboard (#66).** It showed everything with equal
+  weight. I had it rebuilt around three questions, and added the "How to
+  verify" table above.
+
+**Where a test caught the AI being wrong (#42).** It told me that 2-decimal odds
+convert back to the true American price "except for heavy favorites," and I
+chose the storage format on that basis. A unit test showed `−150 → 1.67 → −149`.
+Measuring it found that 90% of favorite prices fail the round trip. We switched
+to full-precision decimal storage and compare sources at the coarser source's
+precision.

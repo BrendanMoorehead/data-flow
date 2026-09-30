@@ -52,9 +52,10 @@ func (s *Syncer) ingest(ctx context.Context, ref sliceRef, snapshot provider.Sna
 
 func (s *Syncer) recordAccepted(ctx context.Context, ref sliceRef, observations []canonical.Observation, receivedAt time.Time, counts *ingestCounts) (map[canonical.PriceKey]bool, error) {
 	seen := make(map[canonical.PriceKey]bool, len(observations))
+	linksByProviderEvent := make(map[string]canonical.EventLink)
 	for _, observation := range observations {
 		observation = withObservedAtFallback(observation, receivedAt)
-		link, err := s.events.ResolveEvent(ctx, observation.Source, observation.Event)
+		link, err := s.eventLinkFor(ctx, observation, linksByProviderEvent)
 		if errors.Is(err, identity.ErrUnknownTeam) {
 			rejection := provider.NewRejection(observation.Event, "%v", err)
 			if err := s.quarantineAll(ctx, ref, []provider.Rejection{rejection}, receivedAt, counts); err != nil {
@@ -76,6 +77,17 @@ func (s *Syncer) recordAccepted(ctx context.Context, ref sliceRef, observations 
 		seen[observation.KeyFor(link.EventID)] = true
 	}
 	return seen, nil
+}
+
+func (s *Syncer) eventLinkFor(ctx context.Context, observation canonical.Observation, linksByProviderEvent map[string]canonical.EventLink) (canonical.EventLink, error) {
+	if link, resolved := linksByProviderEvent[observation.Event.ProviderEventID]; resolved {
+		return link, nil
+	}
+	link, err := s.events.ResolveEvent(ctx, observation.Source, observation.Event)
+	if err == nil {
+		linksByProviderEvent[observation.Event.ProviderEventID] = link
+	}
+	return link, err
 }
 
 func (s *Syncer) markMissingOffBoard(ctx context.Context, ref sliceRef, seen map[canonical.PriceKey]bool, receivedAt time.Time, counts *ingestCounts) error {

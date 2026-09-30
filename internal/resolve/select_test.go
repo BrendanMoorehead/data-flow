@@ -11,7 +11,7 @@ import (
 var (
 	testNow          = time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC)
 	directConfig     = source.Config{ID: canonical.SourceDraftKingsDirect, Kind: source.KindDirect, StaleAfter: 10 * time.Second}
-	aggregatorConfig = source.Config{ID: canonical.SourceAggregator, Kind: source.KindAggregator, StaleAfter: 30 * time.Second}
+	aggregatorConfig = source.Config{ID: canonical.SourceAggregator, Kind: source.KindAggregator, StaleAfter: 30 * time.Second, PriceDecimals: 2}
 )
 
 func candidate(config source.Config, confirmedAgo time.Duration) Candidate {

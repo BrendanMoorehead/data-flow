@@ -25,6 +25,9 @@ type Config struct {
 	Workers                int
 	RequestsPerSecond      float64
 	RequestBurst           int
+	// PriceDecimals is how many decimal places the source rounds its prices to.
+	// Zero means the source sends exact prices, such as American odds.
+	PriceDecimals int
 }
 
 func (c Config) IsFresh(lastConfirmedAt, now time.Time) bool {

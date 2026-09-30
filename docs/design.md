@@ -171,7 +171,8 @@ show `sources_disagree`.
 ## Failure behavior
 
 - **A worker pool per provider (#43).** A dispatcher hands due slices to a
-  fixed pool of workers: 3 for each direct feed, 1 for the aggregator. A
+  fixed pool of workers: 3 for DraftKings (one slice per game), 1 each for
+  FanDuel and the aggregator (one slice per league). A
   slow slice ties up only one worker, and the per-source request timeout
   (#45) caps how long it can do so. The trade-off: if every worker hangs at
   once, that provider's other slices wait up to one timeout.

@@ -41,7 +41,7 @@ Then wait for Brendan's answer before building on it.
 ## After a decision
 
 - Add a row to `docs/decisions.md` with what was decided and Brendan's reason
-  in his own words. If he gave no reason, write "Not recorded". Never invent
+  in his own words. If he gave no reason, leave "Why" empty. Never invent
   one.
 - Record the AI's involvement: none, accepted, reworked, or rejected. The
   "AI & Tools" note needs at least one real case of AI output being changed

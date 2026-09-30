@@ -115,8 +115,8 @@ what to look for while it runs. Run one row's tests with
 | Three different schemas merge into one event per game | `TestProvidersWithDifferentIdentifiersMergeIntoOneEventPerGame`, `TestProviderWithHomeAndAwayReversedJoinsTheSameGameWithSidesFlipped` | The dashboard lists 6 games, each priced for DraftKings and FanDuel, although the providers spell teams differently (`Los Angeles Lakers` / `LA Lakers` / `Lakers`) and use different IDs |
 | Seeing the same data twice changes nothing | `TestRecordObservationTwiceStoresOnceAndMovesConfirmation`, `TestRepeatedPollsDoNotDuplicateObservations` | Log lines show `inserted=0 confirmed=2` on repeat polls: stored once, only freshness moves |
 | An older update never replaces a newer one | `TestLatestSourcePricesIgnoresOutOfOrderObservation` | Runs by default (DraftKings re-sends an old quote about 5% of the time). It's covered by the test, because nothing visibly changes when it works |
-| Direct feed wins while fresh, then falls back to the aggregator | `TestSelectPreferredChoosesFreshDirectOverFreshAggregator`, `TestSelectPreferredFallsBackToAggregatorWhenDirectIsStale` | Click **draftkings-outage**. Within ~12s, "What just happened" shows DraftKings prices switching to the aggregator, then back when it ends |
-| A slow provider doesn't hold up the others | `TestHangingSliceDoesNotStopOtherSlicesFromPolling` | Click **draftkings-slow**. DraftKings goes `retrying` while FanDuel and the aggregator stay `healthy` |
+| Direct feed wins while fresh, then falls back to the aggregator | `TestSelectPreferredChoosesFreshDirectOverFreshAggregator`, `TestSelectPreferredFallsBackToAggregatorWhenDirectIsStale` | Click **draftkings-outage**. Within ~12s, "What just happened" shows DraftKings prices switching to the aggregator, then back once its next retry succeeds (backoff can make that take up to a minute) |
+| A slow provider doesn't hold up the others | `TestHangingSliceDoesNotStopOtherSlicesFromPolling` | Click **draftkings-slow**. DraftKings goes `retrying`, then `failing`, while FanDuel and the aggregator stay `healthy` |
 | Retries back off with jitter, never in a tight loop | `TestDelayDoublesWithEachConsecutiveFailure`, `TestDelayNeverExceedsCeiling`, `TestFinishAfterFailureDelaysAndCountsFailures` | During an outage, the next-retry times in "Sync health" move further out |
 | Rate limits pause the whole provider | `TestRateLimitedResponsePausesTheWholeBudget`, `TestAggregatorRateLimitAllowsOneRequestThenSendsRetryAfter` | Click **aggregator-rate-limit**. Only a couple of `429` lines appear in the logs, not one per request |
 | Bad or incomplete records are quarantined, not stored | `TestRunnerWithoutPriceIsRejected`, `TestCheckMarginsRejectsBothSidesOfAnImpossibleMarket` | FanDuel's quarantine count in "Sync health" rises (about 3% of its prices arrive without one) |
@@ -157,7 +157,8 @@ curl -s localhost:8080/status
 # After ~12s, DraftKings prices switch to "source": "aggregator"
 curl -s localhost:8080/events/1/odds
 
-# End it early, and the prices switch back to draftkings_direct
+# End it early. Prices switch back to draftkings_direct once each slice's
+# next retry succeeds (after several failures, backoff waits up to 60s)
 curl -s -X DELETE localhost:9100/scenarios/draftkings-outage
 ```
 

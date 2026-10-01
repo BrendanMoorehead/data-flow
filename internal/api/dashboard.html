@@ -90,6 +90,7 @@
     <div class="legend small">
       <span><span class="pill good">confirmed</span> a second source agrees</span>
       <span><span class="pill warn">one source</span> nothing to compare against</span>
+      <span><span class="pill warn">no timestamps</span> a second source agrees, but this feed can't say when its prices changed</span>
       <span><span class="pill bad">doubtful</span> sources disagree or data is stale</span>
       <span><span class="pill idle">off board</span> market pulled</span>
     </div>
@@ -224,6 +225,12 @@ function pricesForBook(odds, book) {
   return odds.prices.filter(price => price.book === book);
 }
 
+function trustFor(price) {
+  const trust = trustByConfidence[price.confidence.level];
+  const cappedByTimestamps = price.confidence.level === "medium" && price.confidence.reasons.includes("no_source_timestamp");
+  return cappedByTimestamps ? { ...trust, label: "no timestamps" } : trust;
+}
+
 function cellSummary(prices) {
   if (prices.length === 0) return null;
   const sources = [...new Set(prices.map(price => price.source))];
@@ -232,7 +239,7 @@ function cellSummary(prices) {
   return {
     source: sources.join(" + "),
     offBoard: prices.some(price => price.status === "off_board"),
-    trust: anyStale ? trustByConfidence.low : trustByConfidence[weakest.confidence.level],
+    trust: anyStale ? trustByConfidence.low : trustFor(weakest),
   };
 }
 

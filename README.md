@@ -53,19 +53,10 @@ background problems, which is expected. Press **Ctrl+C** to stop.
 
 ### 3. Try it
 
-Open **http://127.0.0.1:8080/** in a browser. The dashboard refreshes every
-1.5s and shows:
-
-- each source's health, including retrying and failing slices and their next attempt
-- scenario buttons that break things for 30s (click an active one to end it early)
-- every price with its status, source, confidence, and age
-
-For example, click **draftkings-outage** and watch `draftkings_direct` go
-`failing` while DraftKings prices switch to the aggregator.
-
-The dashboard is one static HTML file embedded in the binary. It only reads
-the API below, so everything it shows is also available with `curl`: see
-[Example calls](#example-calls).
+Open **http://127.0.0.1:8080/** in a browser. See
+[Reading the dashboard](#reading-the-dashboard) for what each section means.
+Everything the dashboard shows comes from the read API, so it's also
+available with `curl`: see [Example calls](#example-calls).
 
 ### Options
 
@@ -103,6 +94,63 @@ go test -race ./...   # also checks for concurrency bugs
   port. Stop it, or move ours with the flags above, e.g. `-addr 127.0.0.1:8081`.
 - **`apply schema` or `no such column` errors on start**: the database was
   created by an older version. Delete it (see [Start fresh](#start-fresh)).
+
+## Reading the dashboard
+
+The dashboard (`http://127.0.0.1:8080/`) refreshes every 1.5s. Each section
+answers one question, from top to bottom:
+
+**1. Sync health: is each source keeping up right now?** One line per
+source.
+
+| State | Meaning |
+|---|---|
+| `healthy` | Every slice polled successfully within the source's staleness threshold |
+| `retrying` | A slice failed once or twice and is waiting for its next attempt; usually a blip |
+| `failing` | A slice failed 3 or more times in a row; the line shows how long since the last success and when the next retry is |
+| `stale` | No recent success, but no current error either |
+
+The quarantine count is the number of bad records rejected from that source.
+It rises steadily for FanDuel, which sometimes sends a runner with no price.
+
+**2. Break something.** Each button runs a simulator scenario for 30s. Click
+it again while it's active to end it early.
+
+**3. What just happened: what has the sync engine noticed?** A feed of
+meaningful changes since the page opened: sources failing or recovering,
+scenarios starting or ending, a book's prices switching source, and markets
+going off the board or coming back. Price moves and one-off retries are left
+out on purpose, so each line is worth reading.
+
+**4. Where each price comes from.** One row per game and one cell per book.
+Each cell shows the source being served, the away / home prices, and a color
+for how far to trust them. Click a game for the full detail behind each price:
+decimal odds, confidence reasons, and seconds since last confirmed.
+
+| Color | Label | Meaning |
+|---|---|---|
+| green | `confirmed` | A second fresh source matches or closely agrees |
+| yellow | `one source` | Nothing fresh to compare against, e.g. DraftKings falling back to the aggregator during an outage |
+| yellow | `no timestamps` | A second source agrees, but this feed never says when its prices changed, so confidence is capped |
+| red | `doubtful` | The sources disagree, or the data is stale |
+| grey | `off board` | The market is pulled; the price shown is the last one seen |
+
+**What normal looks like:** all three sources `healthy`; DraftKings cells
+green (its direct feed is confirmed by the aggregator); FanDuel cells yellow
+`no timestamps`; the occasional market going grey and coming back, which is
+the simulator suspending markets; and a brief red `doubtful` right after a
+price moves, until the other source's next poll catches up a few seconds
+later.
+
+**A two-minute tour:**
+1. Click **draftkings-outage**. Within a few seconds, `draftkings_direct` goes
+   `retrying`, then `failing`.
+2. After about 12s, the DraftKings cells switch to `aggregator` and turn
+   yellow `one source`. The feed logs each switch. The system is still
+   serving the best price it has, and it tells you it's less sure.
+3. Click the button again to end it. As each slice's next retry succeeds,
+   the cells switch back to `draftkings_direct` and turn green. Backoff can
+   make this take up to a minute.
 
 ## How to verify
 
@@ -209,8 +257,7 @@ In order, starting with what would break first:
 - `decision-checkpoints` makes the assistant stop at every design choice,
   present options and a recommendation, and wait for my call.
 
-I logged every call along with what the AI proposed: 71 decisions, of which
-**20 changed, rejected, or reworked the AI's proposal**.
+I logged every call along with what the AI proposed, and
 [docs/decisions.md](docs/decisions.md) keeps the ones that shaped the system.
 
 **Where I materially changed the AI's output**
